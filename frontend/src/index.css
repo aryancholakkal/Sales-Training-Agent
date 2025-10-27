@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-primary: #3b82f6;
+  --brand-secondary: #10b981;
+  --brand-accent: #8b5cf6;
+  --brand-light: #f1f5f9;
+  --brand-dark: #1e293b;
+}
+
+/* Brand color utilities */
+.text-brand-primary { color: var(--brand-primary); }
+.text-brand-secondary { color: var(--brand-secondary); }
+.text-brand-accent { color: var(--brand-accent); }
+.text-brand-light { color: var(--brand-light); }
+.text-brand-dark { color: var(--brand-dark); }
+
+.bg-brand-primary { background-color: var(--brand-primary); }
+.bg-brand-secondary { background-color: var(--brand-secondary); }
+.bg-brand-accent { background-color: var(--brand-accent); }
+.bg-brand-light { background-color: var(--brand-light); }
+.bg-brand-dark { background-color: var(--brand-dark); }
+
+.border-brand-primary { border-color: var(--brand-primary); }
+.border-brand-secondary { border-color: var(--brand-secondary); }
+.border-brand-accent { border-color: var(--brand-accent); }
+.border-brand-light { border-color: var(--brand-light); }
+.border-brand-dark { border-color: var(--brand-dark); }
+
+.ring-brand-primary { --tw-ring-color: var(--brand-primary); }
+.ring-brand-secondary { --tw-ring-color: var(--brand-secondary); }
+.ring-brand-accent { --tw-ring-color: var(--brand-accent); }
+.ring-brand-light { --tw-ring-color: var(--brand-light); }
+.ring-brand-dark { --tw-ring-color: var(--brand-dark); }
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--brand-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--brand-accent);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-primary);
+}
+
+/* Smooth transitions */
+* {
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Focus styles */
+button:focus {
+  outline: 2px solid var(--brand-secondary);
+  outline-offset: 2px;
+}
+
+/* Animation for pulse effect */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Animation for spinning */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}

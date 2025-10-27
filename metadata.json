@@ -1,0 +1,8 @@
+
+{
+  "name": "AI Voice Agent for Sales Training",
+  "description": "An AI-powered Voice Agent to simulate real customer interactions for training new sales joiners. Trainees can practice selling products by having realistic voice conversations with AI customer personas.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

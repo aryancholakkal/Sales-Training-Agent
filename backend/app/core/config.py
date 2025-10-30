@@ -16,12 +16,30 @@ class Settings(BaseSettings):
     # CORS Configuration
     cors_origins: list = ["http://localhost:3000", "http://127.0.0.1:3000"]
     
-    # GenAI Configuration
-    gemini_api_key: str
+    # AI Services Configuration
+    # LiveKit Configuration (WebRTC/Real-time orchestration)
+    livekit_api_key: str
+    livekit_api_secret: str
+    livekit_ws_url: str
+    
+    # AssemblyAI Configuration (Speech-to-Text)
+    assemblyai_api_key: str
+    
+    # Groq Configuration (LLM)
+    groq_api_key: str
+    
+    # ElevenLabs Configuration (Text-to-Speech)
+    elevenlabs_api_key: str
+    elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"  # Default voice ID (Adam)
     
     # WebSocket Configuration
     ws_heartbeat_interval: int = 30
     ws_max_connections: int = 100
+    
+    # Audio Configuration
+    audio_sample_rate: int = 16000
+    audio_channels: int = 1
+    audio_chunk_size: int = 1024
     
     class Config:
         env_file = ".env"

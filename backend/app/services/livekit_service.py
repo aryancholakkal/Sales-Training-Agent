@@ -52,6 +52,7 @@ class LiveKitOrchestrationService:
     ) -> bool:
         """Initialize LiveKit orchestration session"""
         try:
+            logger.info("Starting LiveKit orchestration session initialization")
             self.status = AgentStatus.CONNECTING
             if on_status_callback:
                 await on_status_callback(self.status)
@@ -63,8 +64,9 @@ class LiveKitOrchestrationService:
 
             # Initialize AI services with error handling
             services_initialized = []
-            
+
             # Initialize Groq service
+            logger.info("Initializing Groq service...")
             try:
                 self.groq_service = GroqService(groq_api_key)
                 groq_success = await self.groq_service.initialize_session(
@@ -76,12 +78,14 @@ class LiveKitOrchestrationService:
                     services_initialized.append("Groq")
                     logger.info("Groq service initialized successfully")
                 else:
-                    logger.warning("Groq service initialization failed")
+                    logger.warning("Groq service initialization returned False")
             except Exception as e:
                 logger.error(f"Failed to initialize Groq service: {e}")
+                logger.error(f"Groq API key length: {len(groq_api_key) if groq_api_key else 0}")
                 self.groq_service = None
-            
+
             # Initialize AssemblyAI service
+            logger.info("Initializing AssemblyAI service...")
             try:
                 self.stt_service = AssemblyAIService(assemblyai_api_key)
                 stt_success = await self.stt_service.initialize_realtime_session(
@@ -92,12 +96,14 @@ class LiveKitOrchestrationService:
                     services_initialized.append("AssemblyAI")
                     logger.info("AssemblyAI service initialized successfully")
                 else:
-                    logger.warning("AssemblyAI service initialization failed")
+                    logger.warning("AssemblyAI service initialization returned False")
             except Exception as e:
                 logger.error(f"Failed to initialize AssemblyAI service: {e}")
+                logger.error(f"AssemblyAI API key length: {len(assemblyai_api_key) if assemblyai_api_key else 0}")
                 self.stt_service = None
-            
+
             # Initialize ElevenLabs service
+            logger.info("Initializing ElevenLabs service...")
             try:
                 self.tts_service = ElevenLabsService(elevenlabs_api_key, elevenlabs_voice_id)
                 tts_success = await self.tts_service.initialize_session(
@@ -109,16 +115,19 @@ class LiveKitOrchestrationService:
                     services_initialized.append("ElevenLabs")
                     logger.info("ElevenLabs service initialized successfully")
                 else:
-                    logger.warning("ElevenLabs service initialization failed")
+                    logger.warning("ElevenLabs service initialization returned False")
             except Exception as e:
                 logger.error(f"Failed to initialize ElevenLabs service: {e}")
+                logger.error(f"ElevenLabs API key length: {len(elevenlabs_api_key) if elevenlabs_api_key else 0}")
+                logger.error(f"ElevenLabs voice ID: {elevenlabs_voice_id}")
                 self.tts_service = None
-            
+
             # Check if at least one service is available
             if not services_initialized:
+                logger.error("No AI services could be initialized - all services failed")
                 raise Exception("No AI services could be initialized")
-            
-            logger.info(f"Initialized services: {', '.join(services_initialized)}")
+
+            logger.info(f"Successfully initialized services: {', '.join(services_initialized)}")
 
             # Create room and connect
             await self._create_and_connect_room(room_name)

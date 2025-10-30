@@ -256,7 +256,7 @@ AUDIO_CHUNK_SIZE=1024
 ## Service Configuration
 
 ### GroqService
-- Model: `llama3-8b-8192`
+- Model: `llama-3.1-8b-instant`
 - Temperature: 0.8
 - Max tokens: 1024
 - Supports streaming responses

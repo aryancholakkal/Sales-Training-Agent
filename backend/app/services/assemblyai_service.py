@@ -5,13 +5,23 @@ import json
 import base64
 from typing import Optional, Callable, Dict, Any
 import assemblyai as aai
+from assemblyai.streaming.v3 import (
+    BeginEvent,
+    StreamingClient,
+    StreamingClientOptions,
+    StreamingError,
+    StreamingEvents,
+    StreamingParameters,
+    TerminationEvent,
+    TurnEvent,
+)
 from ..models.session import AgentStatus
 
 logger = logging.getLogger(__name__)
 
 
 class AssemblyAIService:
-    """Service for handling Speech-to-Text using AssemblyAI"""
+    """Service for handling Speech-to-Text using AssemblyAI Universal-Streaming"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -20,7 +30,8 @@ class AssemblyAIService:
         self.status = AgentStatus.IDLE
         self._on_transcript_callback: Optional[Callable] = None
         self._on_error_callback: Optional[Callable] = None
-        self._realtime_transcriber = None
+        self._streaming_client = None
+        self.loop = None
 
     async def initialize_realtime_session(
         self,
@@ -28,85 +39,92 @@ class AssemblyAIService:
         on_error_callback: Optional[Callable] = None,
         sample_rate: int = 16000
     ) -> bool:
-        """Initialize real-time transcription session"""
+        """Initialize real-time transcription session using Universal-Streaming"""
         try:
             self.status = AgentStatus.CONNECTING
             self._on_transcript_callback = on_transcript_callback
             self._on_error_callback = on_error_callback
+            self.loop = asyncio.get_running_loop()
 
-            # Create real-time transcriber with updated API
-            self._realtime_transcriber = aai.RealtimeTranscriber(
-                on_data=self._on_realtime_data,
-                on_error=self._on_realtime_error,
-                on_open=self._on_realtime_open,
-                on_close=self._on_realtime_close,
-                sample_rate=sample_rate,
-                word_boost=["sales", "training", "customer", "product", "price", "discount"],
-                encoding=aai.AudioEncoding.pcm_s16le
+            # Create StreamingClient with new Universal-Streaming API
+            self._streaming_client = StreamingClient(
+                StreamingClientOptions(
+                    api_key=self.api_key
+                )
             )
 
-            # Connect to real-time service
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._realtime_transcriber.connect
+            # Register event handlers
+            self._streaming_client.on(StreamingEvents.Begin, self._on_begin)
+            self._streaming_client.on(StreamingEvents.Turn, self._on_turn)
+            self._streaming_client.on(StreamingEvents.Error, self._on_error)
+            self._streaming_client.on(StreamingEvents.Termination, self._on_terminated)
+
+            # Connect to the streaming service with parameters
+            self._streaming_client.connect(
+                StreamingParameters(
+                    sample_rate=sample_rate,
+                    encoding="pcm_s16le",
+                    end_of_turn_confidence_threshold=0.7,
+                    min_end_of_turn_silence_when_confident=500,  # milliseconds
+                    max_turn_silence=2000,  # milliseconds
+                    word_boost=["sales", "training", "customer", "product", "price", "discount"],
+                    format_turns=True
+                )
             )
 
             self.status = AgentStatus.LISTENING
-            logger.info("AssemblyAI real-time session initialized")
+            logger.info("AssemblyAI Universal-Streaming session initialized")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize AssemblyAI real-time session: {e}")
+            logger.error(f"Failed to initialize AssemblyAI streaming session: {e}")
             self.status = AgentStatus.ERROR
             if on_error_callback:
                 await on_error_callback(f"AssemblyAI initialization failed: {str(e)}")
             return False
 
-    def _on_realtime_open(self, session_opened: aai.RealtimeSessionOpened):
-        """Handle real-time session opened"""
-        logger.info(f"AssemblyAI session opened: {session_opened.session_id}")
+    def _on_begin(self, client: StreamingClient, event: BeginEvent):
+        """Handle streaming session opened"""
+        logger.info(f"AssemblyAI session opened: {event.id}")
 
-    def _on_realtime_close(self, session_closed):
-        """Handle real-time session closed"""
-        logger.info("AssemblyAI session closed")
+    def _on_terminated(self, client: StreamingClient, event: TerminationEvent):
+        """Handle streaming session terminated"""
+        logger.info(f"AssemblyAI session terminated: {event.audio_duration_seconds}s processed")
+        self.status = AgentStatus.IDLE
 
-    def _on_realtime_data(self, transcript: aai.RealtimeTranscript):
-        """Handle real-time transcript data"""
+    def _on_turn(self, client: StreamingClient, event: TurnEvent):
+        """Handle turn data (replaces the old transcript data handler)"""
         try:
-            if isinstance(transcript, aai.RealtimeFinalTranscript):
-                # Final transcript
-                if transcript.text and self._on_transcript_callback:
-                    asyncio.create_task(self._on_transcript_callback(
-                        transcript.text,
-                        is_final=True,
-                        confidence=transcript.confidence if hasattr(transcript, 'confidence') else None
-                    ))
-            elif isinstance(transcript, aai.RealtimePartialTranscript):
-                # Partial transcript
-                if transcript.text and self._on_transcript_callback:
-                    asyncio.create_task(self._on_transcript_callback(
-                        transcript.text,
-                        is_final=False,
-                        confidence=transcript.confidence if hasattr(transcript, 'confidence') else None
-                    ))
+            if not event.transcript:
+                return
+                
+            # Universal-Streaming uses "turns" instead of transcripts
+            # end_of_turn indicates if this is final
+            is_final = event.end_of_turn
+            
+            if self._on_transcript_callback and self.loop:
+                self.loop.create_task(self._on_transcript_callback(
+                    event.transcript,
+                    is_final=is_final,
+                    confidence=event.end_of_turn_confidence if hasattr(event, 'end_of_turn_confidence') else None
+                ))
         except Exception as e:
-            logger.error(f"Error processing real-time transcript: {e}")
+            logger.error(f"Error processing streaming turn: {e}")
 
-    def _on_realtime_error(self, error: aai.RealtimeError):
-        """Handle real-time transcription errors"""
-        logger.error(f"AssemblyAI real-time error: {error}")
-        if self._on_error_callback:
-            asyncio.create_task(self._on_error_callback(str(error)))
+    def _on_error(self, client: StreamingClient, error: StreamingError):
+        """Handle streaming transcription errors"""
+        logger.error(f"AssemblyAI streaming error: {error}")
+        if self._on_error_callback and self.loop:
+            self.loop.create_task(self._on_error_callback(str(error)))
 
     async def send_audio_data(self, audio_data: bytes) -> bool:
         """Send audio data for real-time transcription"""
-        if not self._realtime_transcriber or self.status != AgentStatus.LISTENING:
+        if not self._streaming_client or self.status != AgentStatus.LISTENING:
             return False
 
         try:
             # Send audio data to AssemblyAI
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._realtime_transcriber.stream, audio_data
-            )
+            self._streaming_client.stream(audio_data)
             return True
         except Exception as e:
             logger.error(f"Failed to send audio data to AssemblyAI: {e}")
@@ -201,24 +219,20 @@ class AssemblyAIService:
     async def close_realtime_session(self):
         """Close the real-time transcription session"""
         try:
-            if self._realtime_transcriber:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, self._realtime_transcriber.close
-                )
-                self._realtime_transcriber = None
+            if self._streaming_client:
+                self._streaming_client.disconnect()
+                self._streaming_client = None
             
             self.status = AgentStatus.IDLE
-            logger.info("AssemblyAI real-time session closed")
+            logger.info("AssemblyAI streaming session closed")
         except Exception as e:
             logger.error(f"Error closing AssemblyAI session: {e}")
 
     async def pause_transcription(self):
-        """Pause real-time transcription"""
+        """Pause real-time transcription (force end current utterance)"""
         try:
-            if self._realtime_transcriber:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, self._realtime_transcriber.force_end_utterance
-                )
+            if self._streaming_client:
+                self._streaming_client.force_end_utterance()
             logger.info("AssemblyAI transcription paused")
         except Exception as e:
             logger.error(f"Error pausing transcription: {e}")
@@ -228,5 +242,5 @@ class AssemblyAIService:
         return self.status
 
     def is_connected(self) -> bool:
-        """Check if real-time session is connected"""
-        return self._realtime_transcriber is not None and self.status == AgentStatus.LISTENING
+        """Check if streaming session is connected"""
+        return self._streaming_client is not None and self.status == AgentStatus.LISTENING

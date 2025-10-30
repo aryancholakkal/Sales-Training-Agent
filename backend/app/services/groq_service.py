@@ -44,7 +44,7 @@ class GroqService:
 
             # Test the connection with a simple call
             test_response = await self.client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": "Hello"}],
                 max_tokens=10,
                 temperature=0.1
@@ -82,7 +82,7 @@ class GroqService:
 
             # Get response from Groq
             response = await self.client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=self._conversation_history,
                 max_tokens=1024,
                 temperature=0.8,
@@ -134,7 +134,7 @@ class GroqService:
 
             # Get streaming response from Groq
             stream = await self.client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=self._conversation_history,
                 max_tokens=1024,
                 temperature=0.8,

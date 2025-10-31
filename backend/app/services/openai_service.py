@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 class OpenAITTSService:
     """Service for handling Text-to-Speech using OpenAI's TTS API"""
 
-    def __init__(self, api_key: str, voice: str = "alloy"):
+    def __init__(self, api_key: str, voice: str = "alloy", model: str = "tts-1"):
         self.api_key = api_key
         self.voice = voice
+        self.model = model
         self.client = AsyncOpenAI(api_key=api_key)
         self.status = AgentStatus.IDLE
         self._on_audio_callback: Optional[Callable] = None
@@ -23,6 +24,7 @@ class OpenAITTSService:
     async def initialize_session(
         self,
         voice: Optional[str] = None,
+        model: Optional[str] = None,
         on_audio_callback: Optional[Callable] = None,
         on_error_callback: Optional[Callable] = None
     ) -> bool:
@@ -32,6 +34,9 @@ class OpenAITTSService:
 
             if voice:
                 self.voice = voice
+
+            if model:
+                self.model = model
 
             self._on_audio_callback = on_audio_callback
             self._on_error_callback = on_error_callback
@@ -43,7 +48,7 @@ class OpenAITTSService:
                 raise Exception(f"Failed to connect to OpenAI API: {e}")
 
             self.status = AgentStatus.LISTENING
-            logger.info(f"OpenAI TTS session initialized with voice: {self.voice}")
+            logger.info(f"OpenAI TTS session initialized with voice: {self.voice}, model: {self.model}")
             return True
 
         except Exception as e:
@@ -57,7 +62,7 @@ class OpenAITTSService:
         self,
         text: str,
         voice: Optional[str] = None,
-        model: str = "tts-1",
+        model: Optional[str] = None,
         response_format: str = "mp3"
     ) -> Optional[bytes]:
         """Convert text to speech and return audio bytes"""
@@ -69,10 +74,11 @@ class OpenAITTSService:
 
             # Use provided voice or default
             current_voice = voice or self.voice
+            current_model = model or self.model
 
             # Generate speech
             response = await self.client.audio.speech.create(
-                model=model,
+                model=current_model,
                 voice=current_voice,
                 input=text,
                 response_format=response_format
@@ -103,7 +109,7 @@ class OpenAITTSService:
         self,
         text: str,
         voice: Optional[str] = None,
-        model: str = "tts-1",
+        model: Optional[str] = None,
         response_format: str = "mp3"
     ) -> Optional[str]:
         """Convert text to speech and return base64 encoded audio"""
@@ -116,7 +122,7 @@ class OpenAITTSService:
         self,
         text: str,
         voice: Optional[str] = None,
-        model: str = "tts-1",
+        model: Optional[str] = None,
         response_format: str = "mp3"
     ) -> None:
         """Stream text to speech with real-time audio chunks"""
@@ -128,10 +134,11 @@ class OpenAITTSService:
 
             # Use provided voice or default
             current_voice = voice or self.voice
+            current_model = model or self.model
 
             # Stream audio generation
             response = await self.client.audio.speech.create(
-                model=model,
+                model=current_model,
                 voice=current_voice,
                 input=text,
                 response_format=response_format
@@ -200,3 +207,7 @@ class OpenAITTSService:
     def get_current_voice(self) -> str:
         """Get the current voice"""
         return self.voice
+
+    def get_current_model(self) -> str:
+        """Get the current model"""
+        return self.model

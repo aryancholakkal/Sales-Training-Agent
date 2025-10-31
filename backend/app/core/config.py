@@ -28,9 +28,12 @@ class Settings(BaseSettings):
     # Groq Configuration (LLM)
     groq_api_key: str
     
-    # ElevenLabs Configuration (Text-to-Speech)
-    elevenlabs_api_key: str
-    elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"  # Default voice ID (Adam)
+    # OpenAI Configuration (Text-to-Speech)
+    openai_api_key: str
+    openai_tts_voice: str = "alloy"  # Default voice (alloy, echo, fable, onyx, nova, shimmer)
+
+    # Google Gemini Configuration (Multimodal AI)
+    genai_api_key: str
     
     # WebSocket Configuration
     ws_heartbeat_interval: int = 30

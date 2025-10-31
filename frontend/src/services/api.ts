@@ -18,7 +18,7 @@ export interface TranscriptMessage {
   text: string;
 }
 
-export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'speaking' | 'error';
+export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export class ApiService {
   static async getPersonas(): Promise<Persona[]> {

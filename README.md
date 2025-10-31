@@ -1,6 +1,6 @@
 # AI Sales Training Simulator
 
-An AI-powered voice agent application for training sales representatives through realistic customer interactions. The application features a React frontend and FastAPI backend architecture with real-time audio processing using Google's Gemini AI.
+An AI-powered voice agent application for training sales representatives through realistic customer interactions. The application features a React frontend and FastAPI backend architecture with real-time audio processing using multiple AI services including Google's Gemini, Groq, AssemblyAI, ElevenLabs, and LiveKit for comprehensive voice training capabilities.
 
 ## Architecture Overview
 
@@ -28,17 +28,26 @@ An AI-powered voice agent application for training sales representatives through
 
 ## Features
 
+- **Multi-Service AI Integration**: Supports multiple AI providers (Gemini, Groq, AssemblyAI, ElevenLabs, LiveKit)
 - **Real-time Voice Interaction**: Direct voice communication with AI personas
 - **Multiple Customer Personas**: Practice with different customer types (Friendly, Skeptical, Price-Sensitive)
-- **Live Transcription**: Real-time speech-to-text for both trainee and AI responses
+- **Advanced Speech Processing**: Real-time speech-to-text using AssemblyAI's Universal-Streaming API
+- **High-Quality Text-to-Speech**: Natural voice synthesis with ElevenLabs
+- **LiveKit Integration**: Real-time video/audio conferencing capabilities
 - **WebSocket Communication**: Low-latency real-time communication between frontend and backend
 - **Modular Architecture**: Separated frontend and backend for scalability
+- **Fallback Support**: Graceful degradation when services are unavailable
 
 ## Prerequisites
 
 - **Backend**: Python 3.8+, pip
 - **Frontend**: Node.js 16+, npm
-- **API Key**: Google Gemini API key
+- **API Keys**:
+  - Google Gemini API key (for GenAI service)
+  - Groq API key (for LLM service)
+  - AssemblyAI API key (for speech-to-text)
+  - ElevenLabs API key (for text-to-speech)
+  - LiveKit API key and secret (for real-time communication)
 
 ## Setup Instructions
 
@@ -70,15 +79,24 @@ PORT=8000
 # CORS Configuration
 CORS_ORIGINS=["http://localhost:3000", "http://127.0.0.1:3000"]
 
-# GenAI Configuration
+# AI Service API Keys
 GEMINI_API_KEY=your_actual_gemini_api_key_here
+GROQ_API_KEY=your_actual_groq_api_key_here
+ASSEMBLYAI_API_KEY=your_actual_assemblyai_api_key_here
+ELEVENLABS_API_KEY=your_actual_elevenlabs_api_key_here
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM  # Default voice ID
+
+# LiveKit Configuration
+LIVEKIT_API_KEY=your_actual_livekit_api_key_here
+LIVEKIT_API_SECRET=your_actual_livekit_api_secret_here
+LIVEKIT_WS_URL=wss://your-livekit-server.livekit.cloud
 
 # WebSocket Configuration
 WS_HEARTBEAT_INTERVAL=30
 WS_MAX_CONNECTIONS=100
 ```
 
-**Important**: Replace `your_actual_gemini_api_key_here` with your actual Google Gemini API key.
+**Important**: Replace all `your_actual_*_api_key_here` placeholders with your actual API keys from the respective services.
 
 #### Start the Backend Server
 ```bash
@@ -218,9 +236,42 @@ npm run preview
 
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS
 - **Backend**: FastAPI, Python 3.8+, WebSockets, Pydantic
-- **AI**: Google Gemini 2.0 Flash with Live API
+- **AI Services**:
+  - **LLM**: Google Gemini 2.0 Flash Live API, Groq (Llama-3.1-8B)
+  - **Speech-to-Text**: AssemblyAI Universal-Streaming API
+  - **Text-to-Speech**: ElevenLabs API
+  - **Real-time Communication**: LiveKit SDK
+- **Audio Processing**: NumPy for audio manipulation and resampling
 - **Real-time**: WebSocket communication for audio streaming
 - **Build Tools**: Vite (frontend), Uvicorn (backend)
+
+## Service Architecture
+
+The application uses a modular service architecture where different AI services can be mixed and matched:
+
+### Core Services
+
+- **GenAIService**: Handles Google Gemini Live API for real-time conversational AI
+- **GroqService**: Provides fast LLM responses using Groq's Llama models
+- **AssemblyAIService**: Real-time speech-to-text using Universal-Streaming API
+- **ElevenLabsService**: High-quality text-to-speech synthesis
+- **LiveKitOrchestrationService**: Orchestrates all services for real-time conversations
+- **AudioService**: Audio processing utilities (resampling, format conversion, etc.)
+
+### Service Integration
+
+Services are designed to work together seamlessly:
+- Audio input → AssemblyAI (STT) → Groq/GenAI (LLM) → ElevenLabs (TTS) → Audio output
+- LiveKit provides the real-time communication infrastructure
+- WebSocket handles communication between frontend and backend services
+
+### Configuration
+
+Each service can be configured independently in the `.env` file, allowing for:
+- Service failover and fallback options
+- Different voice configurations
+- Custom API endpoints and parameters
+- Selective service enablement based on available API keys
 
 ## Contributing
 

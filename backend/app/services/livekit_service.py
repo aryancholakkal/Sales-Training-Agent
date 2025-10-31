@@ -10,7 +10,8 @@ from livekit import api, rtc
 from ..models.session import AgentStatus
 from .groq_service import GroqService
 from .assemblyai_service import AssemblyAIService
-from .elevenlabs_service import ElevenLabsService
+from .openai_service import OpenAITTSService
+from .genai_service import GenAIService
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ class LiveKitOrchestrationService:
         # AI Services
         self.groq_service: Optional[GroqService] = None
         self.stt_service: Optional[AssemblyAIService] = None
-        self.tts_service: Optional[ElevenLabsService] = None
+        self.tts_service: Optional[OpenAITTSService] = None
+        self.genai_service: Optional[GenAIService] = None
         
         # VAD and pipeline configuration
         self.vad_instance = None
@@ -44,8 +46,9 @@ class LiveKitOrchestrationService:
         persona_instruction: str,
         groq_api_key: str,
         assemblyai_api_key: str,
-        elevenlabs_api_key: str,
-        elevenlabs_voice_id: str,
+        openai_api_key: str,
+        openai_tts_voice: str,
+        genai_api_key: str,
         on_message_callback: Optional[Callable] = None,
         on_status_callback: Optional[Callable] = None,
         on_transcript_callback: Optional[Callable] = None
@@ -102,25 +105,44 @@ class LiveKitOrchestrationService:
                 logger.error(f"AssemblyAI API key length: {len(assemblyai_api_key) if assemblyai_api_key else 0}")
                 self.stt_service = None
 
-            # Initialize ElevenLabs service
-            logger.info("Initializing ElevenLabs service...")
+            # Initialize OpenAI TTS service
+            logger.info("Initializing OpenAI TTS service...")
             try:
-                self.tts_service = ElevenLabsService(elevenlabs_api_key, elevenlabs_voice_id)
+                self.tts_service = OpenAITTSService(openai_api_key, openai_tts_voice)
                 tts_success = await self.tts_service.initialize_session(
-                    elevenlabs_voice_id,
+                    openai_tts_voice,
                     self._on_audio_generated,
                     self._on_service_error
                 )
                 if tts_success:
-                    services_initialized.append("ElevenLabs")
-                    logger.info("ElevenLabs service initialized successfully")
+                    services_initialized.append("OpenAI TTS")
+                    logger.info("OpenAI TTS service initialized successfully")
                 else:
-                    logger.warning("ElevenLabs service initialization returned False")
+                    logger.warning("OpenAI TTS service initialization returned False")
             except Exception as e:
-                logger.error(f"Failed to initialize ElevenLabs service: {e}")
-                logger.error(f"ElevenLabs API key length: {len(elevenlabs_api_key) if elevenlabs_api_key else 0}")
-                logger.error(f"ElevenLabs voice ID: {elevenlabs_voice_id}")
+                logger.error(f"Failed to initialize OpenAI TTS service: {e}")
+                logger.error(f"OpenAI API key length: {len(openai_api_key) if openai_api_key else 0}")
+                logger.error(f"OpenAI TTS voice: {openai_tts_voice}")
                 self.tts_service = None
+
+            # Initialize GenAI service
+            logger.info("Initializing GenAI service...")
+            try:
+                self.genai_service = GenAIService(genai_api_key)
+                genai_success = await self.genai_service.create_session(
+                    persona_instruction,
+                    self._on_genai_message,
+                    self._on_service_status_change
+                )
+                if genai_success:
+                    services_initialized.append("GenAI")
+                    logger.info("GenAI service initialized successfully")
+                else:
+                    logger.warning("GenAI service initialization returned False")
+            except Exception as e:
+                logger.error(f"Failed to initialize GenAI service: {e}")
+                logger.error(f"GenAI API key length: {len(genai_api_key) if genai_api_key else 0}")
+                self.genai_service = None
 
             # Check if at least one service is available
             if not services_initialized:
@@ -223,13 +245,16 @@ class LiveKitOrchestrationService:
                 })
 
             # If transcript is final, send to LLM
-            if is_final and text.strip() and self.groq_service:
+            if is_final and text.strip():
                 self.status = AgentStatus.THINKING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
-                
-                # Send to Groq LLM
-                await self.groq_service.send_message(text)
+
+                # Send to available LLM (prefer GenAI if available, fallback to Groq)
+                if self.genai_service:
+                    await self.genai_service.send_text(text)
+                elif self.groq_service:
+                    await self.groq_service.send_message(text)
 
         except Exception as e:
             logger.error(f"Error handling transcript: {e}")
@@ -249,12 +274,33 @@ class LiveKitOrchestrationService:
                 self.status = AgentStatus.SPEAKING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
-                
-                # Send to ElevenLabs TTS
+
+                # Send to OpenAI TTS
                 await self.tts_service.text_to_speech(response)
 
         except Exception as e:
             logger.error(f"Error handling LLM response: {e}")
+
+    async def _on_genai_message(self, message: str):
+        """Handle messages from GenAI service"""
+        try:
+            if self._on_transcript_callback:
+                await self._on_transcript_callback({
+                    "text": message,
+                    "is_final": True,
+                    "speaker": "AI Assistant"
+                })
+
+            # Send to TTS if available
+            if message.strip() and self.tts_service:
+                self.status = AgentStatus.SPEAKING
+                if self._on_status_callback:
+                    await self._on_status_callback(self.status)
+
+                await self.tts_service.text_to_speech(message)
+
+        except Exception as e:
+            logger.error(f"Error handling GenAI message: {e}")
 
     async def _on_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False):
         """Handle generated audio from TTS service"""
@@ -297,7 +343,7 @@ class LiveKitOrchestrationService:
             self.status = AgentStatus.ERROR
         else:
             # Check status of available services only
-            available_services = [service for service in [self.groq_service, self.stt_service, self.tts_service] if service is not None]
+            available_services = [service for service in [self.groq_service, self.stt_service, self.tts_service, self.genai_service] if service is not None]
             if available_services and all(service.get_status() != AgentStatus.ERROR for service in available_services):
                 self.status = status
         
@@ -314,10 +360,14 @@ class LiveKitOrchestrationService:
     async def send_text_message(self, text: str) -> bool:
         """Send a text message through the pipeline"""
         try:
-            if self.groq_service:
+            # Send to available LLM (prefer GenAI if available, fallback to Groq)
+            if self.genai_service:
+                await self.genai_service.send_text(text)
+                return True
+            elif self.groq_service:
                 await self.groq_service.send_message(text)
                 return True
-            logger.warning("Groq service not available")
+            logger.warning("No LLM service available")
             return False
         except Exception as e:
             logger.error(f"Failed to send text message: {e}")
@@ -333,6 +383,8 @@ class LiveKitOrchestrationService:
                 await self.stt_service.close_realtime_session()
             if self.tts_service:
                 await self.tts_service.close_session()
+            if self.genai_service:
+                await self.genai_service.close_session()
 
             # Disconnect from room
             if self.room:

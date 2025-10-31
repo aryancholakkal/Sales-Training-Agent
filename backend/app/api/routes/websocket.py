@@ -99,11 +99,20 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                 session_data = active_sessions.get(session_id)
                 if not session_data:
                     return
-                
+
+                # Map speaker labels to allowed values
+                speaker_raw = transcript_data.get("speaker", "Unknown")
+                if speaker_raw == "AI Assistant":
+                    speaker = "Customer"
+                elif speaker_raw in ["Trainee", "Customer"]:
+                    speaker = speaker_raw
+                else:
+                    speaker = "Customer"  # Default fallback
+
                 # Create transcript message
                 transcript = TranscriptMessage(
                     id=len(session_data['transcripts']),
-                    speaker=transcript_data.get("speaker", "Unknown"),
+                    speaker=speaker,
                     text=transcript_data.get("text", "")
                 )
                 
@@ -131,8 +140,9 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
             persona_instruction=persona.system_instruction,
             groq_api_key=settings.groq_api_key,
             assemblyai_api_key=settings.assemblyai_api_key,
-            elevenlabs_api_key=settings.elevenlabs_api_key,
-            elevenlabs_voice_id=settings.elevenlabs_voice_id,
+            openai_api_key=settings.openai_api_key,
+            openai_tts_voice=settings.openai_tts_voice,
+            genai_api_key=settings.genai_api_key,
             on_message_callback=on_message_received,
             on_status_callback=on_status_change,
             on_transcript_callback=on_transcript_received

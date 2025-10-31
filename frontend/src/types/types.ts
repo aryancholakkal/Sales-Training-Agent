@@ -7,7 +7,7 @@ export interface Persona {
   systemInstruction: string;
 }
 
-export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'speaking' | 'error';
+export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export interface Transcript {
   id: number;

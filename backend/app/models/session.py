@@ -7,6 +7,7 @@ class AgentStatus(str, Enum):
     IDLE = "idle"
     CONNECTING = "connecting"
     LISTENING = "listening"
+    THINKING = "thinking"
     SPEAKING = "speaking"
     ERROR = "error"
 

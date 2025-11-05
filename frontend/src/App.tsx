@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Persona, AgentStatus, TranscriptMessage, ApiService } from './services/api';
 import { WebSocketService } from './services/websocket';
-import { createBlob, decode, decodeAudioData } from './utils/audio';
+import { decode, decodeAudioData } from './utils/audio';
 import { MicrophoneIcon, SpeakerIcon, LoadingSpinner } from './components/Icons';
 
 // Helper component for persona selection
@@ -167,44 +167,77 @@ export default function App() {
             wsServiceRef.current = new WebSocketService(
                 (newStatus: AgentStatus) => setStatus(newStatus),
                 (transcript: TranscriptMessage) => setTranscripts(prev => [...prev, { ...transcript, id: nextTranscriptIdRef.current++ }]),
-                async (audioData: string) => {
-                    // Handle incoming audio from backend
-                    console.log('[App] Received audio data from backend');
-                    if (outputAudioContextRef.current) {
-                        const outputAudioContext = outputAudioContextRef.current;
-                        nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
+                                                                                async (
+                                                                                    audioData: string,
+                                                                                    mimeType?: string,
+                                                                                    sampleRate?: number,
+                                                                                    channels?: number,
+                                                                                    bitRate?: number,
+                                                                                    codec?: string,
+                                                                                    bitDepth?: number,
+                                                                                    encoding?: string
+                                                                                ) => {
+                                      // Handle incoming audio from backend
+                                      console.log('[App] Received audio data from backend');
+                                      console.debug('[App] audio metadata', { mimeType, sampleRate, channels, bitRate, codec, bitDepth, encoding });
+                                    if (outputAudioContextRef.current) {
+                                        const outputAudioContext = outputAudioContextRef.current;
+                                        nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
 
-                        const audioBuffer = await decodeAudioData(decode(audioData), outputAudioContext, 24000, 1);
+                                        let audioBuffer: AudioBuffer | null = null;
+                                                                try {
+                                                                    // Treat any 'mp3' or 'mpeg' mime types as MP3
+                                                                    if (mimeType && (mimeType.includes('mp3') || mimeType.includes('mpeg'))) {
+                                                                        // MP3: decode using decodeAudioData
+                                                                        const uint8 = decode(audioData);
+                                                                        // Create an ArrayBuffer view containing only the audio bytes
+                                                                        const arrayBuffer = uint8.buffer.slice(uint8.byteOffset, uint8.byteOffset + uint8.byteLength) as ArrayBuffer;
+                                                                        audioBuffer = await outputAudioContext.decodeAudioData(arrayBuffer);
+                                                                    } else {
+                                                                        // Default to PCM Int16
+                                                                        audioBuffer = await decodeAudioData(
+                                                                            decode(audioData),
+                                                                            outputAudioContext,
+                                                                            sampleRate || 24000,
+                                                                            channels || 1
+                                                                        );
+                                                                    }
+                                        } catch (err) {
+                                            console.error('Audio decode error:', err, { mimeType, sampleRate, channels });
+                                            return;
+                                        }
 
-                        const source = outputAudioContext.createBufferSource();
-                        source.buffer = audioBuffer;
-                        source.connect(outputAudioContext.destination);
+                                        if (audioBuffer) {
+                                            const source = outputAudioContext.createBufferSource();
+                                            source.buffer = audioBuffer;
+                                            source.connect(outputAudioContext.destination);
 
-                        source.addEventListener('ended', () => {
-                            sourcesRef.current.delete(source);
-                            if (sourcesRef.current.size === 0) {
-                                console.log('[App] All audio sources ended, setting status to listening');
-                                setStatus('listening');
-                                // Re-enable listening when AI finishes speaking
-                                isListeningRef.current = true;
-                                if (workletNodeRef.current) {
-                                    workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
-                                }
-                            }
-                        });
+                                            source.addEventListener('ended', () => {
+                                                sourcesRef.current.delete(source);
+                                                if (sourcesRef.current.size === 0) {
+                                                    console.log('[App] All audio sources ended, setting status to listening');
+                                                    setStatus('listening');
+                                                    // Re-enable listening when AI finishes speaking
+                                                    isListeningRef.current = true;
+                                                    if (workletNodeRef.current) {
+                                                        workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
+                                                    }
+                                                }
+                                            });
 
-                        source.start(nextStartTimeRef.current);
-                        nextStartTimeRef.current += audioBuffer.duration;
-                        sourcesRef.current.add(source);
+                                            source.start(nextStartTimeRef.current);
+                                            nextStartTimeRef.current += audioBuffer.duration;
+                                            sourcesRef.current.add(source);
 
-                        // Disable listening while AI is speaking
-                        console.log('[App] AI is speaking, disabling listening');
-                        isListeningRef.current = false;
-                        if (workletNodeRef.current) {
-                            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
-                        }
-                    }
-                },
+                                            // Disable listening while AI is speaking
+                                            console.log('[App] AI is speaking, disabling listening');
+                                            isListeningRef.current = false;
+                                            if (workletNodeRef.current) {
+                                                workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
+                                            }
+                                        }
+                                    }
+                                },
                 (error: string) => {
                     console.error('WebSocket error:', error);
                     setStatus('error');

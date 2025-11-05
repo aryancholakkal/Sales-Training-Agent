@@ -10,6 +10,12 @@ export interface WebSocketMessage {
 export interface AudioMessage {
   audio: string; // base64 encoded
   mime_type: string;
+  sample_rate?: number;
+  channels?: number;
+  bit_rate?: number;
+  codec?: string;
+  bit_depth?: number;
+  encoding?: string;
   speaker?: string; // 'AI Assistant' or 'Customer'
 }
 
@@ -18,13 +24,13 @@ export class WebSocketService {
   private personaId: string | null = null;
   private onStatusChange?: (status: AgentStatus) => void;
   private onTranscript?: (transcript: TranscriptMessage) => void;
-  private onAudio?: (audioData: string, speaker?: string) => void;
+  private onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void;
   private onError?: (error: string) => void;
 
   constructor(
     onStatusChange?: (status: AgentStatus) => void,
     onTranscript?: (transcript: TranscriptMessage) => void,
-    onAudio?: (audioData: string, speaker?: string) => void,
+  onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void,
     onError?: (error: string) => void
   ) {
     this.onStatusChange = onStatusChange;
@@ -96,7 +102,17 @@ export class WebSocketService {
 
       case 'audio':
         if (this.onAudio && message.data?.audio) {
-          this.onAudio(message.data.audio, message.data.speaker);
+          this.onAudio(
+            message.data.audio,
+            message.data.mime_type,
+            message.data.sample_rate,
+            message.data.channels,
+            message.data.bit_rate,
+            message.data.codec,
+            message.data.bit_depth,
+            message.data.encoding,
+            message.data.speaker
+          );
         }
         break;
 

@@ -353,7 +353,7 @@ class LiveKitOrchestrationService:
             logger.error(f"Error handling LLM response: {e}")
 
 
-    async def _on_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False):
+    async def _on_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False, bit_rate: Optional[int] = None, codec: Optional[str] = None, sample_rate: Optional[int] = None, channels: Optional[int] = None, bit_depth: Optional[int] = None, encoding: Optional[str] = None):
         """Handle generated audio from AI TTS service"""
         try:
             if not self._is_active:
@@ -369,10 +369,24 @@ class LiveKitOrchestrationService:
             if self._on_message_callback:
                 audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
                 logger.info(f"[WebSocket] Sending AI audio to client: {len(audio_base64)} base64 chars")
+                # Use provided metadata when available, otherwise sensible defaults
+                resolved_mime = mime_type or "audio/mpeg"
+                resolved_sample_rate = sample_rate or (24000 if "mp3" in resolved_mime or "mpeg" in resolved_mime else 16000)
+                resolved_channels = channels or 1
+                resolved_bit_rate = bit_rate or 192000
+                resolved_codec = codec or ("mp3" if "mp3" in resolved_mime or "mpeg" in resolved_mime else None)
+                resolved_bit_depth = bit_depth
+                resolved_encoding = encoding
                 await self._on_message_callback({
                     "type": "audio",
                     "data": audio_base64,
-                    "mime_type": mime_type,
+                    "mime_type": resolved_mime,
+                    "sample_rate": resolved_sample_rate,
+                    "channels": resolved_channels,
+                    "bit_rate": resolved_bit_rate,
+                    "codec": resolved_codec,
+                    "bit_depth": resolved_bit_depth,
+                    "encoding": resolved_encoding,
                     "speaker": "AI Assistant"
                 })
 
@@ -385,7 +399,7 @@ class LiveKitOrchestrationService:
         except Exception as e:
             logger.error(f"Error handling AI generated audio: {e}")
 
-    async def _on_customer_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False):
+    async def _on_customer_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False, bit_rate: Optional[int] = None, codec: Optional[str] = None, sample_rate: Optional[int] = None, channels: Optional[int] = None, bit_depth: Optional[int] = None, encoding: Optional[str] = None):
         """Handle generated audio from customer TTS service"""
         try:
             if not self._is_active:
@@ -401,10 +415,23 @@ class LiveKitOrchestrationService:
             if self._on_message_callback:
                 audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
                 logger.info(f"[WebSocket] Sending customer audio to client: {len(audio_base64)} base64 chars")
+                resolved_mime = mime_type or "audio/mpeg"
+                resolved_sample_rate = sample_rate or (24000 if "mp3" in resolved_mime or "mpeg" in resolved_mime else 16000)
+                resolved_channels = channels or 1
+                resolved_bit_rate = bit_rate or 192000
+                resolved_codec = codec or ("mp3" if "mp3" in resolved_mime or "mpeg" in resolved_mime else None)
+                resolved_bit_depth = bit_depth
+                resolved_encoding = encoding
                 await self._on_message_callback({
                     "type": "audio",
                     "data": audio_base64,
-                    "mime_type": mime_type,
+                    "mime_type": resolved_mime,
+                    "sample_rate": resolved_sample_rate,
+                    "channels": resolved_channels,
+                    "bit_rate": resolved_bit_rate,
+                    "codec": resolved_codec,
+                    "bit_depth": resolved_bit_depth,
+                    "encoding": resolved_encoding,
                     "speaker": "Customer"
                 })
 

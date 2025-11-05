@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     openai_api_key: str
     openai_tts_voice: str = "alloy"  # Default voice (alloy, echo, fable, onyx, nova, shimmer)
     openai_tts_model: str = "tts-1"  # Default model (tts-1, tts-1-hd)
+    # Default response format for OpenAI TTS. Can be set in .env as OPENAI_TTS_RESPONSE_FORMAT
+    # Supported values: 'mp3' or 'pcm'
+    openai_tts_response_format: str = "mp3"
 
     # ElevenLabs Configuration (Text-to-Speech)
     elevenlabs_api_key: str

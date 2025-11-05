@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     livekit_api_secret: str
     livekit_ws_url: str
     
-    # AssemblyAI Configuration (Speech-to-Text)
-    assemblyai_api_key: str
+    # Deepgram Configuration (Speech-to-Text)
+    deepgram_api_key: str
     
     # Groq Configuration (LLM)
     groq_api_key: str

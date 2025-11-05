@@ -9,16 +9,15 @@ from livekit import api, rtc
 # from livekit.agents import llm, stt, tts, vad
 from ..models.session import AgentStatus
 from .groq_service import GroqService
-from .assemblyai_service import AssemblyAIService
+from .deepgram_service import DeepgramService
 from .openai_service import OpenAITTSService
-from .genai_service import GenAIService
 
 logger = logging.getLogger(__name__)
 
 
 class LiveKitOrchestrationService:
     """Service for orchestrating real-time conversations using LiveKit with VAD and turn detection"""
-    
+
     def __init__(self, api_key: str, api_secret: str, ws_url: str):
         self.api_key = api_key
         self.api_secret = api_secret
@@ -26,16 +25,17 @@ class LiveKitOrchestrationService:
         self.room = None
         self.agent = None
         self.status = AgentStatus.IDLE
+        self._is_active = True
         self._on_message_callback: Optional[Callable] = None
         self._on_status_callback: Optional[Callable] = None
         self._on_transcript_callback: Optional[Callable] = None
-        
+
         # AI Services
         self.groq_service: Optional[GroqService] = None
-        self.stt_service: Optional[AssemblyAIService] = None
+        self.stt_service: Optional[DeepgramService] = None
         self.tts_service: Optional[OpenAITTSService] = None
-        self.genai_service: Optional[GenAIService] = None
-        
+        self.customer_tts_service: Optional[OpenAITTSService] = None
+
         # VAD and pipeline configuration
         self.vad_instance = None
         self.pipeline_agent = None
@@ -45,10 +45,9 @@ class LiveKitOrchestrationService:
         room_name: str,
         persona_instruction: str,
         groq_api_key: str,
-        assemblyai_api_key: str,
+        deepgram_api_key: str,
         openai_api_key: str,
         openai_tts_voice: str,
-        genai_api_key: str,
         on_message_callback: Optional[Callable] = None,
         on_status_callback: Optional[Callable] = None,
         on_transcript_callback: Optional[Callable] = None
@@ -87,67 +86,110 @@ class LiveKitOrchestrationService:
                 logger.error(f"Groq API key length: {len(groq_api_key) if groq_api_key else 0}")
                 self.groq_service = None
 
-            # Initialize AssemblyAI service
-            logger.info("Initializing AssemblyAI service...")
+            # Initialize Deepgram service
+            logger.info("Initializing Deepgram service...")
             try:
-                self.stt_service = AssemblyAIService(assemblyai_api_key)
-                stt_success = await self.stt_service.initialize_realtime_session(
-                    self._on_transcript_received,
-                    self._on_service_error
-                )
+                # More detailed logging for API key
+                api_key_length = len(deepgram_api_key) if deepgram_api_key else 0
+                logger.info(f"Deepgram API key check - Length: {api_key_length}, First 4 chars: {deepgram_api_key[:4] if api_key_length > 4 else 'N/A'}")
+                
+                if not deepgram_api_key or api_key_length == 0:
+                    logger.error("Deepgram API key is missing or empty")
+                    raise ValueError("Deepgram API key is required")
+                
+                # Create service instance
+                self.stt_service = DeepgramService(deepgram_api_key)
+                logger.info("Deepgram service instance created successfully")
+
+                # Initialize session with detailed error reporting
+                try:
+                    stt_success = await self.stt_service.initialize(
+                        on_transcript_callback=self._on_transcript_received
+                    )
+                    logger.info(f"Deepgram initialization result: {stt_success}")
+                except Exception as init_error:
+                    logger.error(f"Deepgram initialization error: {str(init_error)}")
+                    raise
+
                 if stt_success:
-                    services_initialized.append("AssemblyAI")
-                    logger.info("AssemblyAI service initialized successfully")
+                    try:
+                        # Check connection status with safer attribute access
+                        is_connected = self.stt_service.is_connected()
+                        status = self.stt_service.get_status()
+                        
+                        logger.info(f"Deepgram Status Check:")
+                        logger.info(f"- Connected: {is_connected}")
+                        logger.info(f"- Service Status: {status}")
+                        logger.info(f"- WebSocket State: {'CONNECTED' if is_connected else 'DISCONNECTED'}")
+
+                        if is_connected:
+                            services_initialized.append("Deepgram")
+                            logger.info("✓ Deepgram service initialized and connected successfully")
+                        else:
+                            logger.warning("⚠ Deepgram service initialized but not connected")
+                            logger.error("Connection failed after initialization")
+                            # Keep service instance for potential reconnection
+                            logger.warning("Keeping Deepgram service instance for potential reconnection")
+                    except Exception as e:
+                        logger.error(f"Error checking Deepgram connection: {e}")
+                        logger.error("Continuing with degraded STT functionality")
                 else:
-                    logger.warning("AssemblyAI service initialization returned False")
+                    logger.error("✗ Deepgram service initialization failed")
+                    logger.error(f"Service status: {self.stt_service.get_status() if self.stt_service else 'No service instance'}")
+                    self.stt_service = None
             except Exception as e:
-                logger.error(f"Failed to initialize AssemblyAI service: {e}")
-                logger.error(f"AssemblyAI API key length: {len(assemblyai_api_key) if assemblyai_api_key else 0}")
+                logger.error(f"Failed to initialize Deepgram service: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
                 self.stt_service = None
 
-            # Initialize OpenAI TTS service
-            logger.info("Initializing OpenAI TTS service...")
+            # Initialize OpenAI TTS service for AI responses
+            logger.info("Initializing OpenAI TTS service for AI...")
             try:
                 self.tts_service = OpenAITTSService(openai_api_key, openai_tts_voice)
                 tts_success = await self.tts_service.initialize_session(
-                    openai_tts_voice,
-                    self._on_audio_generated,
-                    self._on_service_error
+                    voice=openai_tts_voice,
+                    model="tts-1",
+                    on_audio_callback=self._on_audio_generated,
+                    on_error_callback=self._on_service_error
                 )
                 if tts_success:
-                    services_initialized.append("OpenAI TTS")
-                    logger.info("OpenAI TTS service initialized successfully")
+                    services_initialized.append("OpenAI TTS (AI)")
+                    logger.info("OpenAI TTS service for AI initialized successfully")
                 else:
-                    logger.warning("OpenAI TTS service initialization returned False")
+                    logger.warning("OpenAI TTS service for AI initialization returned False")
             except Exception as e:
-                logger.error(f"Failed to initialize OpenAI TTS service: {e}")
+                logger.error(f"Failed to initialize OpenAI TTS service for AI: {e}")
                 logger.error(f"OpenAI API key length: {len(openai_api_key) if openai_api_key else 0}")
                 logger.error(f"OpenAI TTS voice: {openai_tts_voice}")
                 self.tts_service = None
 
-            # Initialize GenAI service
-            logger.info("Initializing GenAI service...")
+            # Initialize OpenAI TTS service for customer voice (different voice)
+            logger.info("Initializing OpenAI TTS service for customer...")
             try:
-                self.genai_service = GenAIService(genai_api_key)
-                genai_success = await self.genai_service.create_session(
-                    persona_instruction,
-                    self._on_genai_message,
-                    self._on_service_status_change
+                # Use a different voice for customer (e.g., "nova" for female customer voice)
+                customer_voice = "nova"  # Different from AI voice
+                self.customer_tts_service = OpenAITTSService(openai_api_key, customer_voice)
+                customer_tts_success = await self.customer_tts_service.initialize_session(
+                    voice=customer_voice,
+                    model="tts-1",
+                    on_audio_callback=self._on_customer_audio_generated,
+                    on_error_callback=self._on_service_error
                 )
-                if genai_success:
-                    services_initialized.append("GenAI")
-                    logger.info("GenAI service initialized successfully")
+                if customer_tts_success:
+                    services_initialized.append("OpenAI TTS (Customer)")
+                    logger.info("OpenAI TTS service for customer initialized successfully")
                 else:
-                    logger.warning("GenAI service initialization returned False")
+                    logger.warning("OpenAI TTS service for customer initialization returned False")
             except Exception as e:
-                logger.error(f"Failed to initialize GenAI service: {e}")
-                logger.error(f"GenAI API key length: {len(genai_api_key) if genai_api_key else 0}")
-                self.genai_service = None
+                logger.error(f"Failed to initialize OpenAI TTS service for customer: {e}")
+                self.customer_tts_service = None
 
-            # Check if at least one service is available
-            if not services_initialized:
-                logger.error("No AI services could be initialized - all services failed")
-                raise Exception("No AI services could be initialized")
+            # Check if at least one service is available (Groq and at least one TTS)
+            if not services_initialized or "Groq" not in services_initialized:
+                logger.error("No AI services could be initialized - Groq is required")
+                raise Exception("Groq service is required for the system to work")
 
             logger.info(f"Successfully initialized services: {', '.join(services_initialized)}")
 
@@ -233,28 +275,49 @@ class LiveKitOrchestrationService:
         """Handle track unsubscription"""
         logger.info(f"Track unsubscribed: {track.sid} from {participant.identity}")
 
-    async def _on_transcript_received(self, text: str, is_final: bool, confidence: Optional[float] = None):
+    async def _on_transcript_received(self, transcript_data: dict):
         """Handle transcript from STT service"""
         try:
+            if not self._is_active:
+                return
+
+            text = transcript_data.get("text", "")
+            is_final = transcript_data.get("is_final", False)
+            confidence = transcript_data.get("confidence")
+
+            logger.info(f"[STT] Received transcript in LiveKit service: '{text}' (final: {is_final}, confidence: {confidence})")
+
             if self._on_transcript_callback:
+                logger.info(f"[WebSocket] Sending transcript to WebSocket client: '{text}'")
                 await self._on_transcript_callback({
                     "text": text,
                     "is_final": is_final,
                     "confidence": confidence,
                     "speaker": "Trainee"
                 })
+            else:
+                logger.warning("[WebSocket] No transcript callback available")
 
-            # If transcript is final, send to LLM
+            # If transcript is final, send to LLM and also generate customer voice
             if is_final and text.strip():
+                logger.info(f"[LLM] Processing final transcript: '{text}'")
                 self.status = AgentStatus.THINKING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
 
-                # Send to available LLM (prefer GenAI if available, fallback to Groq)
-                if self.genai_service:
-                    await self.genai_service.send_text(text)
-                elif self.groq_service:
-                    await self.groq_service.send_message(text)
+                # Send to Groq LLM with streaming
+                if self.groq_service:
+                    logger.info("[LLM] Sending message to Groq service")
+                    await self.groq_service.stream_message(text)
+                else:
+                    logger.warning("[LLM] Groq service not available")
+
+                # Also generate customer voice for the transcript
+                if self.customer_tts_service:
+                    logger.info("[TTS] Generating customer voice for transcript")
+                    await self.customer_tts_service.stream_text_to_speech(text)
+                else:
+                    logger.warning("[TTS] Customer TTS service not available")
 
         except Exception as e:
             logger.error(f"Error handling transcript: {e}")
@@ -262,6 +325,11 @@ class LiveKitOrchestrationService:
     async def _on_llm_response(self, response: str, is_partial: bool = False):
         """Handle response from LLM service"""
         try:
+            if not self._is_active:
+                return
+
+            logger.info(f"[LLM] Received response: '{response}' (partial: {is_partial})")
+
             if self._on_transcript_callback:
                 await self._on_transcript_callback({
                     "text": response,
@@ -271,40 +339,28 @@ class LiveKitOrchestrationService:
 
             # If response is complete, send to TTS
             if not is_partial and response.strip() and self.tts_service:
+                logger.info(f"[TTS] Generating AI speech for response: '{response}'")
                 self.status = AgentStatus.SPEAKING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
 
-                # Send to OpenAI TTS
-                await self.tts_service.text_to_speech(response)
+                # Send to OpenAI TTS with streaming for real-time audio
+                await self.tts_service.stream_text_to_speech(response)
+            elif not is_partial and response.strip() and not self.tts_service:
+                logger.warning("[TTS] AI TTS service not available for response")
 
         except Exception as e:
             logger.error(f"Error handling LLM response: {e}")
 
-    async def _on_genai_message(self, message: str):
-        """Handle messages from GenAI service"""
-        try:
-            if self._on_transcript_callback:
-                await self._on_transcript_callback({
-                    "text": message,
-                    "is_final": True,
-                    "speaker": "AI Assistant"
-                })
-
-            # Send to TTS if available
-            if message.strip() and self.tts_service:
-                self.status = AgentStatus.SPEAKING
-                if self._on_status_callback:
-                    await self._on_status_callback(self.status)
-
-                await self.tts_service.text_to_speech(message)
-
-        except Exception as e:
-            logger.error(f"Error handling GenAI message: {e}")
 
     async def _on_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False):
-        """Handle generated audio from TTS service"""
+        """Handle generated audio from AI TTS service"""
         try:
+            if not self._is_active:
+                return
+
+            logger.info(f"[TTS] AI audio generated: {len(audio_bytes)} bytes, mime_type: {mime_type}, is_stream: {is_stream}")
+
             # Publish audio to LiveKit room
             if self.room and audio_bytes:
                 await self._publish_audio_to_room(audio_bytes)
@@ -312,19 +368,50 @@ class LiveKitOrchestrationService:
             # Also send via callback for WebSocket clients
             if self._on_message_callback:
                 audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                logger.info(f"[WebSocket] Sending AI audio to client: {len(audio_base64)} base64 chars")
                 await self._on_message_callback({
                     "type": "audio",
                     "data": audio_base64,
-                    "mime_type": mime_type
+                    "mime_type": mime_type,
+                    "speaker": "AI Assistant"
                 })
 
             if not is_stream:  # Only update status when complete audio is generated
+                logger.info("[Status] AI finished speaking, setting status to listening")
                 self.status = AgentStatus.LISTENING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
 
         except Exception as e:
-            logger.error(f"Error handling generated audio: {e}")
+            logger.error(f"Error handling AI generated audio: {e}")
+
+    async def _on_customer_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False):
+        """Handle generated audio from customer TTS service"""
+        try:
+            if not self._is_active:
+                return
+
+            logger.info(f"[TTS] Customer audio generated: {len(audio_bytes)} bytes, mime_type: {mime_type}, is_stream: {is_stream}")
+
+            # Publish audio to LiveKit room
+            if self.room and audio_bytes:
+                await self._publish_audio_to_room(audio_bytes)
+
+            # Also send via callback for WebSocket clients
+            if self._on_message_callback:
+                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                logger.info(f"[WebSocket] Sending customer audio to client: {len(audio_base64)} base64 chars")
+                await self._on_message_callback({
+                    "type": "audio",
+                    "data": audio_base64,
+                    "mime_type": mime_type,
+                    "speaker": "Customer"
+                })
+
+            # Don't change status for customer audio - it's supplementary
+
+        except Exception as e:
+            logger.error(f"Error handling customer generated audio: {e}")
 
     async def _publish_audio_to_room(self, audio_bytes: bytes):
         """Publish audio to LiveKit room"""
@@ -343,10 +430,10 @@ class LiveKitOrchestrationService:
             self.status = AgentStatus.ERROR
         else:
             # Check status of available services only
-            available_services = [service for service in [self.groq_service, self.stt_service, self.tts_service, self.genai_service] if service is not None]
+            available_services = [service for service in [self.groq_service, self.stt_service, self.tts_service] if service is not None]
             if available_services and all(service.get_status() != AgentStatus.ERROR for service in available_services):
                 self.status = status
-        
+
         if self._on_status_callback:
             await self._on_status_callback(self.status)
 
@@ -360,31 +447,99 @@ class LiveKitOrchestrationService:
     async def send_text_message(self, text: str) -> bool:
         """Send a text message through the pipeline"""
         try:
-            # Send to available LLM (prefer GenAI if available, fallback to Groq)
-            if self.genai_service:
-                await self.genai_service.send_text(text)
+            if not self._is_active:
+                return False
+
+            # Send to Groq LLM with streaming
+            if self.groq_service:
+                await self.groq_service.stream_message(text)
                 return True
-            elif self.groq_service:
-                await self.groq_service.send_message(text)
-                return True
-            logger.warning("No LLM service available")
+            logger.warning("Groq service not available")
             return False
         except Exception as e:
             logger.error(f"Failed to send text message: {e}")
             return False
 
+    async def cleanup(self):
+        """Clean up all services in proper order"""
+        # Stop accepting new messages
+        self._is_active = False
+
+        # Add small delay to let fast pending operations complete (protected)
+        try:
+            await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            # Propagate cancellation so shutdown proceeds immediately
+            logger.info("Cleanup interrupted during initial sleep; re-raising CancelledError")
+            raise
+
+        logger.info("Starting service cleanup...")
+
+        # Wrap each service closure so a CancelledError in one doesn't prevent other cleanups
+        try:
+            # 1. Stop accepting new audio first
+            if self.stt_service:
+                try:
+                    logger.info("Closing Deepgram service...")
+                    await asyncio.wait_for(self.stt_service.close(), timeout=3.0)
+                except asyncio.CancelledError:
+                    logger.info("Deepgram close was cancelled; re-raising CancelledError")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error closing Deepgram service: {e}")
+
+            # 2. Wait briefly for any pending TTS operations (protected from cancellation)
+            try:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                logger.info("Cleanup sleep interrupted; continuing with remaining shutdown steps")
+
+            # 3. Close TTS services
+            if self.tts_service:
+                try:
+                    await self.tts_service.close_session()
+                except asyncio.CancelledError:
+                    logger.info("TTS close was cancelled; re-raising CancelledError")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error closing TTS service: {e}")
+
+            if self.customer_tts_service:
+                try:
+                    await self.customer_tts_service.close_session()
+                except asyncio.CancelledError:
+                    logger.info("Customer TTS close was cancelled; re-raising CancelledError")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error closing customer TTS service: {e}")
+
+            # 4. Finally close LLM
+            if self.groq_service:
+                try:
+                    logger.info("Closing Groq service...")
+                    await self.groq_service.close_session()
+                except asyncio.CancelledError:
+                    logger.info("Groq close was cancelled; re-raising CancelledError")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error closing Groq service: {e}")
+
+            logger.info("All services cleaned up (best-effort)")
+
+        except asyncio.CancelledError:
+            # Ensure cancellation propagates to the caller so the runtime can shut down quickly
+            logger.info("Cleanup received CancelledError; re-raising to allow immediate shutdown")
+            raise
+        except asyncio.TimeoutError:
+            logger.warning("Service cleanup timed out, forcing shutdown")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+
     async def close_session(self):
         """Close the LiveKit orchestration session"""
         try:
-            # Close AI services
-            if self.groq_service:
-                await self.groq_service.close_session()
-            if self.stt_service:
-                await self.stt_service.close_realtime_session()
-            if self.tts_service:
-                await self.tts_service.close_session()
-            if self.genai_service:
-                await self.genai_service.close_session()
+            # Use the new cleanup method for proper shutdown order
+            await self.cleanup()
 
             # Disconnect from room
             if self.room:
@@ -395,6 +550,10 @@ class LiveKitOrchestrationService:
             logger.info("LiveKit orchestration session closed")
 
         except Exception as e:
+            # If the close was cancelled, re-raise to allow shutdown to proceed
+            if isinstance(e, asyncio.CancelledError):
+                logger.info("close_session cancelled; re-raising CancelledError")
+                raise
             logger.error(f"Error closing LiveKit session: {e}")
 
     def get_status(self) -> AgentStatus:

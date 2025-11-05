@@ -136,14 +136,16 @@ export default function App() {
     const [isSimulating, setIsSimulating] = useState(false);
     const [status, setStatus] = useState<AgentStatus>('idle');
     const [transcripts, setTranscripts] = useState<TranscriptMessage[]>([]);
-    
+
     const wsServiceRef = useRef<WebSocketService | null>(null);
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const outputAudioContextRef = useRef<AudioContext | null>(null);
     const microphoneStreamRef = useRef<MediaStream | null>(null);
-    const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+    const workletNodeRef = useRef<AudioWorkletNode | null>(null);
     const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
     const nextStartTimeRef = useRef<number>(0);
+    const nextTranscriptIdRef = useRef<number>(0);
+    const isListeningRef = useRef<boolean>(false);
 
     const startSimulation = useCallback(async (persona: Persona) => {
         setStatus('connecting');
@@ -164,29 +166,43 @@ export default function App() {
             // Create WebSocket service
             wsServiceRef.current = new WebSocketService(
                 (newStatus: AgentStatus) => setStatus(newStatus),
-                (transcript: TranscriptMessage) => setTranscripts(prev => [...prev, transcript]),
+                (transcript: TranscriptMessage) => setTranscripts(prev => [...prev, { ...transcript, id: nextTranscriptIdRef.current++ }]),
                 async (audioData: string) => {
                     // Handle incoming audio from backend
+                    console.log('[App] Received audio data from backend');
                     if (outputAudioContextRef.current) {
                         const outputAudioContext = outputAudioContextRef.current;
                         nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
 
                         const audioBuffer = await decodeAudioData(decode(audioData), outputAudioContext, 24000, 1);
-                        
+
                         const source = outputAudioContext.createBufferSource();
                         source.buffer = audioBuffer;
                         source.connect(outputAudioContext.destination);
-                        
+
                         source.addEventListener('ended', () => {
                             sourcesRef.current.delete(source);
                             if (sourcesRef.current.size === 0) {
+                                console.log('[App] All audio sources ended, setting status to listening');
                                 setStatus('listening');
+                                // Re-enable listening when AI finishes speaking
+                                isListeningRef.current = true;
+                                if (workletNodeRef.current) {
+                                    workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
+                                }
                             }
                         });
-                        
+
                         source.start(nextStartTimeRef.current);
                         nextStartTimeRef.current += audioBuffer.duration;
                         sourcesRef.current.add(source);
+
+                        // Disable listening while AI is speaking
+                        console.log('[App] AI is speaking, disabling listening');
+                        isListeningRef.current = false;
+                        if (workletNodeRef.current) {
+                            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
+                        }
                     }
                 },
                 (error: string) => {
@@ -201,23 +217,34 @@ export default function App() {
                 throw new Error('Failed to connect to backend');
             }
 
-            // Set up microphone audio processing
+            // Set up microphone audio processing using AudioWorklet
             const inputAudioContext = inputAudioContextRef.current;
             if (inputAudioContext && microphoneStreamRef.current) {
                 const source = inputAudioContext.createMediaStreamSource(microphoneStreamRef.current);
-                const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
-                scriptProcessorRef.current = scriptProcessor;
 
-                scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
-                    const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-                    const pcmBlob = createBlob(inputData);
-                    if (wsServiceRef.current) {
-                        wsServiceRef.current.sendAudio(pcmBlob.data, pcmBlob.mimeType);
+                // Load and use AudioWorklet instead of ScriptProcessorNode
+                await inputAudioContext.audioWorklet.addModule('/audio-processor.js');
+                const workletNode = new AudioWorkletNode(inputAudioContext, 'audio-processor');
+                workletNodeRef.current = workletNode;
+
+                // Enable listening initially
+                isListeningRef.current = true;
+                workletNode.port.postMessage({ type: 'setListening', value: true });
+
+                workletNode.port.onmessage = (event) => {
+                    // Send audio data via WebSocket only if we're actively listening
+                    if (wsServiceRef.current && isListeningRef.current) {
+                        console.log('[App] Sending audio data to WebSocket');
+                        // Convert Int16Array to base64 string
+                        const int16Array = event.data;
+                        const uint8Array = new Uint8Array(int16Array.buffer, int16Array.byteOffset, int16Array.byteLength);
+                        const base64String = btoa(String.fromCharCode(...uint8Array));
+                        wsServiceRef.current.sendAudio(base64String, 'audio/pcm;rate=16000');
                     }
                 };
-                
-                source.connect(scriptProcessor);
-                scriptProcessor.connect(inputAudioContext.destination);
+
+                source.connect(workletNode);
+                workletNode.connect(inputAudioContext.destination);
             }
 
         } catch (error) {
@@ -229,6 +256,14 @@ export default function App() {
     }, []);
 
     const endSimulation = useCallback(() => {
+        console.log('[App] Ending simulation and resetting to first screen');
+
+        // Disable listening immediately
+        isListeningRef.current = false;
+        if (workletNodeRef.current) {
+            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
+        }
+
         // Close WebSocket connection
         if (wsServiceRef.current) {
             wsServiceRef.current.endSession();
@@ -236,23 +271,25 @@ export default function App() {
         }
 
         // Clean up audio
-        scriptProcessorRef.current?.disconnect();
-        scriptProcessorRef.current = null;
-        
+        workletNodeRef.current?.disconnect();
+        workletNodeRef.current = null;
+
         microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
         microphoneStreamRef.current = null;
-        
+
         inputAudioContextRef.current?.close();
         outputAudioContextRef.current?.close();
         inputAudioContextRef.current = null;
         outputAudioContextRef.current = null;
-        
+
         sourcesRef.current.clear();
 
         setIsSimulating(false);
         setSelectedPersona(null);
         setTranscripts([]);
         setStatus('idle');
+        nextTranscriptIdRef.current = 0;
+        isListeningRef.current = false;
     }, []);
     
     useEffect(() => {

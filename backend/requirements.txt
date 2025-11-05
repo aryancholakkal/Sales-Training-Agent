@@ -12,10 +12,11 @@ passlib[bcrypt]==1.7.4
 # New AI Service Dependencies
 livekit>=0.12.0,<0.13.0
 livekit-agents==0.8.0
-assemblyai>=0.35.0,<0.36.0
+assemblyai>=0.45.0,<0.46.0
 groq>=0.11.0,<0.12.0
 elevenlabs>=1.10.0,<1.11.0
 openai>=1.0.0,<2.0.0
+deepgram-sdk>=3.0.0,<4.0.0
 
 # Audio processing
 numpy==1.26.4

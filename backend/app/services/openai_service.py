@@ -136,19 +136,20 @@ class OpenAITTSService:
             current_voice = voice or self.voice
             current_model = model or self.model
 
-            # Stream audio generation
-            response = await self.client.audio.speech.create(
+            # Stream audio generation using OpenAI's streaming response
+            async with self.client.audio.speech.with_streaming_response.create(
                 model=current_model,
                 voice=current_voice,
                 input=text,
                 response_format=response_format
-            )
-
-            # Stream audio chunks
-            async for chunk in response.aiter_bytes():
-                if self._on_audio_callback:
-                    mime_type = f"audio/{response_format}"
-                    await self._on_audio_callback(chunk, mime_type, is_stream=True)
+            ) as response:
+                # Stream audio chunks with small delay for better real-time experience
+                async for chunk in response.iter_bytes(chunk_size=1024):
+                    if chunk and self._on_audio_callback:
+                        mime_type = f"audio/{response_format}"
+                        await self._on_audio_callback(chunk, mime_type, is_stream=True)
+                    # Small delay to prevent overwhelming the audio playback
+                    await asyncio.sleep(0.01)
 
             self.status = AgentStatus.LISTENING
             logger.info(f"Completed streaming OpenAI TTS for text: {text[:50]}...")

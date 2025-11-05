@@ -3,13 +3,14 @@ import { AgentStatus, TranscriptMessage } from './api';
 const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000/api/ws';
 
 export interface WebSocketMessage {
-  type: 'audio' | 'transcript' | 'status' | 'error' | 'end_session';
+  type: 'audio' | 'transcript' | 'status' | 'error' | 'end_session' | 'session_initialized' | 'pong' | 'transcript_history' | 'conversation_reset';
   data?: any;
 }
 
 export interface AudioMessage {
   audio: string; // base64 encoded
   mime_type: string;
+  speaker?: string; // 'AI Assistant' or 'Customer'
 }
 
 export class WebSocketService {
@@ -17,13 +18,13 @@ export class WebSocketService {
   private personaId: string | null = null;
   private onStatusChange?: (status: AgentStatus) => void;
   private onTranscript?: (transcript: TranscriptMessage) => void;
-  private onAudio?: (audioData: string) => void;
+  private onAudio?: (audioData: string, speaker?: string) => void;
   private onError?: (error: string) => void;
 
   constructor(
     onStatusChange?: (status: AgentStatus) => void,
     onTranscript?: (transcript: TranscriptMessage) => void,
-    onAudio?: (audioData: string) => void,
+    onAudio?: (audioData: string, speaker?: string) => void,
     onError?: (error: string) => void
   ) {
     this.onStatusChange = onStatusChange;
@@ -76,30 +77,50 @@ export class WebSocketService {
 
   private handleMessage(message: WebSocketMessage) {
     switch (message.type) {
+      case 'session_initialized':
+        console.log('Session initialized:', message.data);
+        // Handle session initialization (optional callback)
+        break;
+
       case 'status':
         if (this.onStatusChange && message.data?.status) {
           this.onStatusChange(message.data.status);
         }
         break;
-        
+
       case 'transcript':
         if (this.onTranscript && message.data) {
           this.onTranscript(message.data);
         }
         break;
-        
+
       case 'audio':
         if (this.onAudio && message.data?.audio) {
-          this.onAudio(message.data.audio);
+          this.onAudio(message.data.audio, message.data.speaker);
         }
         break;
-        
+
       case 'error':
         if (this.onError && message.data?.message) {
           this.onError(message.data.message);
         }
         break;
-        
+
+      case 'pong':
+        // Handle pong response for ping keepalive
+        console.debug('Received pong');
+        break;
+
+      case 'transcript_history':
+        // Handle transcript history request response
+        console.log('Transcript history:', message.data);
+        break;
+
+      case 'conversation_reset':
+        // Handle conversation reset confirmation
+        console.log('Conversation reset:', message.data);
+        break;
+
       default:
         console.warn('Unknown message type:', message.type);
     }

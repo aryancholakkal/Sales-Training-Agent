@@ -147,10 +147,13 @@ class GroqService:
                 if chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     full_response += content
-                    
+
                     # Send partial response via callback
                     if self._on_message_callback:
                         await self._on_message_callback(content, is_partial=True)
+
+                    # Small delay to create word-by-word effect
+                    await asyncio.sleep(0.05)
 
             # Add complete response to conversation history
             if full_response:

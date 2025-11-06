@@ -25,3 +25,15 @@ class PersonaService:
         """Get a specific persona by ID"""
         personas = PersonaService.get_all_personas()
         return next((p for p in personas if p.id == persona_id), None)
+    
+
+
+
+# Top-level function for prompt composition
+from app.core.config import SYSTEM_PROMPT
+def get_persona_prompt(persona):
+    """
+    Returns the combined system prompt for the selected persona.
+    """
+    # Prepend global system prompt to persona instruction
+    return f"{SYSTEM_PROMPT}\n\n{persona.system_instruction}"

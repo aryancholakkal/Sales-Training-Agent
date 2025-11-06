@@ -16,6 +16,7 @@ export interface TranscriptMessage {
   id: number;
   speaker: 'Trainee' | 'Customer';
   text: string;
+  is_final?: boolean;
 }
 
 export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';

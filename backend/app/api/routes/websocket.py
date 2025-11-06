@@ -5,7 +5,7 @@ import logging
 import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from typing import Dict, Optional
-from ...services.persona_service import PersonaService
+from ...services.persona_service import PersonaService, get_persona_prompt
 from ...services.livekit_service import LiveKitOrchestrationService
 from ...models.session import AgentStatus, WebSocketMessage, TranscriptMessage
 from ...core.config import get_settings
@@ -114,6 +114,16 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                                 "mime_type": message.get("mime_type", "audio/mpeg")
                             }
                         })
+                    elif message.get("type") == "transcript":
+                        # Streaming transcript from LLM
+                        await safe_send({
+                            "type": "transcript",
+                            "data": {
+                                "speaker": "Customer",
+                                "text": message.get("text", ""),
+                                "is_final": message.get("is_final", False),
+                            }
+                        })
                     else:
                         # Generic message
                         await safe_send({
@@ -121,10 +131,14 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                             "data": {"message": str(message)}
                         })
                 else:
-                    # Text message from LLM
+                    # Text message from LLM (assume streaming)
                     await safe_send({
-                        "type": "message",
-                        "data": {"message": str(message)}
+                        "type": "transcript",
+                        "data": {
+                            "speaker": "Customer",
+                            "text": str(message),
+                            "is_final": False,
+                        }
                     })
 
             except Exception as e:
@@ -178,9 +192,11 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
         
         # Initialize orchestration session
         room_name = active_sessions[session_id]["room_name"]
+        combined_prompt = get_persona_prompt(persona)
+        logger.info(f"Combined system prompt: {combined_prompt}")
         success = await orchestration_service.initialize_session(
             room_name=room_name,
-            persona_instruction=persona.system_instruction,
+            persona_instruction=combined_prompt,
             groq_api_key=settings.groq_api_key,
             deepgram_api_key=settings.deepgram_api_key,
             openai_api_key=settings.openai_api_key,

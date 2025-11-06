@@ -166,18 +166,74 @@ export default function App() {
             // Create WebSocket service
             wsServiceRef.current = new WebSocketService(
                 (newStatus: AgentStatus) => setStatus(newStatus),
-                (transcript: TranscriptMessage) => setTranscripts(prev => [...prev, { ...transcript, id: nextTranscriptIdRef.current++ }]),
-                                                                                async (
-                                                                                    audioData: string,
-                                                                                    mimeType?: string,
-                                                                                    sampleRate?: number,
-                                                                                    channels?: number,
-                                                                                    bitRate?: number,
-                                                                                    codec?: string,
-                                                                                    bitDepth?: number,
-                                                                                    encoding?: string
-                                                                                ) => {
-                                      // Handle incoming audio from backend
+                (transcript: TranscriptMessage) => {
+                    setTranscripts(prev => {
+                        // Only stream for Customer (AI) messages
+                        if (transcript.speaker === 'Customer') {
+                            // Find last AI message
+                            const lastIdx = prev.length - 1;
+                            if (
+                                lastIdx >= 0 &&
+                                prev[lastIdx].speaker === 'Customer' &&
+                                !prev[lastIdx].is_final
+                            ) {
+                                // Update last message
+                                const updated = [...prev];
+                                updated[lastIdx] = {
+                                    ...updated[lastIdx],
+                                    text: updated[lastIdx].text + transcript.text,
+                                    is_final: transcript.is_final,
+                                };
+                                return updated;
+                            } else {
+                                // Add new streaming message
+                                return [
+                                    ...prev,
+                                    {
+                                        ...transcript,
+                                        id: nextTranscriptIdRef.current++,
+                                    },
+                                ];
+                            }
+                        } else {
+                            // For Trainee (user), stream into last message if not final
+                            const lastIdx = prev.length - 1;
+                            if (
+                                lastIdx >= 0 &&
+                                prev[lastIdx].speaker === 'Trainee' &&
+                                !prev[lastIdx].is_final
+                            ) {
+                                const updated = [...prev];
+                                updated[lastIdx] = {
+                                    ...updated[lastIdx],
+                                    text: updated[lastIdx].text + transcript.text,
+                                    is_final: transcript.is_final,
+                                };
+                                return updated;
+                            } else {
+                                // Add new streaming message
+                                return [
+                                    ...prev,
+                                    {
+                                        ...transcript,
+                                        id: nextTranscriptIdRef.current++,
+                                    },
+                                ];
+                            }
+                        }
+                    });
+                },
+                async (
+                    audioData: string,
+                    mimeType?: string,
+                    sampleRate?: number,
+                    channels?: number,
+                    bitRate?: number,
+                    codec?: string,
+                    bitDepth?: number,
+                    encoding?: string
+                ) => {
+                    // Handle incoming audio from backend
                                       console.log('[App] Received audio data from backend');
                                       console.debug('[App] audio metadata', { mimeType, sampleRate, channels, bitRate, codec, bitDepth, encoding });
                                     if (outputAudioContextRef.current) {

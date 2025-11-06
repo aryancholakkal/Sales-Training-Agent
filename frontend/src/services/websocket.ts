@@ -1,9 +1,9 @@
-import { AgentStatus, TranscriptMessage } from './api';
+  import { AgentStatus, TranscriptMessage } from './api';
 
-const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000/api/ws';
+  const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000/api/ws';
 
 export interface WebSocketMessage {
-  type: 'audio' | 'transcript' | 'status' | 'error' | 'end_session' | 'session_initialized' | 'pong' | 'transcript_history' | 'conversation_reset';
+  type: 'audio' | 'transcript' | 'status' | 'error' | 'end_session' | 'session_initialized' | 'pong' | 'transcript_history' | 'conversation_reset' | 'start_listening' | 'stop_listening';
   data?: any;
 }
 
@@ -20,6 +20,14 @@ export interface AudioMessage {
 }
 
 export class WebSocketService {
+  sendStopListening() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const message: WebSocketMessage = {
+        type: 'stop_listening'
+      };
+      this.ws.send(JSON.stringify(message));
+    }
+  }
   private ws: WebSocket | null = null;
   private personaId: string | null = null;
   private onStatusChange?: (status: AgentStatus) => void;
@@ -30,13 +38,22 @@ export class WebSocketService {
   constructor(
     onStatusChange?: (status: AgentStatus) => void,
     onTranscript?: (transcript: TranscriptMessage) => void,
-  onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void,
+    onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void,
     onError?: (error: string) => void
   ) {
     this.onStatusChange = onStatusChange;
     this.onTranscript = onTranscript;
     this.onAudio = onAudio;
     this.onError = onError;
+  }
+
+  sendStartListening() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const message: WebSocketMessage = {
+        type: 'start_listening'
+      };
+      this.ws.send(JSON.stringify(message));
+    }
   }
 
   connect(personaId: string): Promise<boolean> {

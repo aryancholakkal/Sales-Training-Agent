@@ -45,6 +45,8 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
     last_stt_error_time = 0.0
     stt_error_interval = 2.0  # seconds between repeated STT error logs
     audio_frames_sent = 0  # count frames for periodic summaries
+    # Manual listening state
+    is_listening = False
 
     # Create a cancellation event for graceful shutdown
     cancel_event = asyncio.Event()
@@ -244,70 +246,73 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
 
                 message_type = message_data.get("type")
 
+                if message_type == "start_listening":
+                    is_listening = True
+                    logger.info("[WebSocket] Received start_listening, enabling listening state.")
+                    continue
+
+                if message_type == "stop_listening":
+                    is_listening = False
+                    logger.info("[WebSocket] Received stop_listening, disabling listening state.")
+                    continue
+
                 if message_type == "audio":
+                    if not is_listening:
+                        logger.info("[WebSocket] Ignoring audio: not in listening state.")
+                        continue
                     # Handle audio input for STT processing
                     audio_data = message_data.get("data", {}).get("audio", "")
-                    if audio_data:
-                        now = time.time()
-                        # Verbose per-audio logs throttled to avoid flooding logs
-                        if now - last_audio_log_time >= audio_log_interval:
-                            logger.info(f"[WebSocket] Received audio data: {len(audio_data)} base64 chars")
-                            last_audio_log_time = now
-                        else:
-                            logger.debug(f"[WebSocket] Received audio (throttled): {len(audio_data)} base64 chars")
-
-                        try:
-                            # STT service status checks — only log full details occasionally
-                            stt_is_connected = False
-                            if not orchestration_service:
-                                if now - last_stt_error_time >= stt_error_interval:
-                                    logger.error("[WebSocket] Orchestration service is None")
-                                    last_stt_error_time = now
-                                continue
-                            if not hasattr(orchestration_service, 'stt_service') or orchestration_service.stt_service is None:
-                                if now - last_stt_error_time >= stt_error_interval:
-                                    logger.error("[WebSocket] STT service not available in orchestration service")
-                                    last_stt_error_time = now
-                                continue
-
-                            stt_is_connected = orchestration_service.stt_service.is_connected()
-                            # Occasionally log full status to help debugging
-                            if now - last_audio_log_time < 0.001:  # just-logged verbose block
-                                logger.info("=== STT Service Status Check ===")
-                                logger.info(f"[WebSocket] STT service state: Connected={stt_is_connected}, Status={orchestration_service.stt_service.get_status()}, IsRunning={orchestration_service.stt_service.is_running}")
-
-                            if stt_is_connected:
-                                # Count frames and log summary periodically
-                                audio_frames_sent += 1
-                                now = time.time()
-                                if now - last_audio_log_time >= audio_log_interval:
-                                    logger.info(f"[WebSocket] Processed {audio_frames_sent} audio frames in last {audio_log_interval:.1f}s")
-                                    audio_frames_sent = 0
-                                    last_audio_log_time = now
-                                else:
-                                    logger.debug("[WebSocket] Sending audio frame to STT")
-
-                                task = asyncio.create_task(
-                                    orchestration_service.stt_service.send_audio_base64(audio_data)
-                                )
-                                background_tasks.add(task)
-                                task.add_done_callback(background_tasks.discard)
-
-                                # Check cancellation after creating task
-                                if cancel_event.is_set():
-                                    logger.info("[WebSocket] Cancellation requested during audio processing")
-                                    break
+                    if not audio_data:
+                        continue
+                    now = time.time()
+                    # Verbose per-audio logs throttled to avoid flooding logs
+                    if now - last_audio_log_time >= audio_log_interval:
+                        logger.info(f"[WebSocket] Received audio data: {len(audio_data)} base64 chars")
+                        last_audio_log_time = now
+                    else:
+                        logger.debug(f"[WebSocket] Received audio (throttled): {len(audio_data)} base64 chars")
+                    # Check orchestration service
+                    if not orchestration_service:
+                        if now - last_stt_error_time >= stt_error_interval:
+                            logger.error("[WebSocket] Orchestration service is None")
+                            last_stt_error_time = now
+                        continue
+                    # Check stt_service
+                    if not hasattr(orchestration_service, 'stt_service') or orchestration_service.stt_service is None:
+                        if now - last_stt_error_time >= stt_error_interval:
+                            logger.error("[WebSocket] STT service not available in orchestration service")
+                            last_stt_error_time = now
+                        continue
+                    try:
+                        stt_is_connected = orchestration_service.stt_service.is_connected()
+                        # Occasionally log full status to help debugging
+                        if now - last_audio_log_time < 0.001:  # just-logged verbose block
+                            logger.info("=== STT Service Status Check ===")
+                            logger.info(f"[WebSocket] STT service state: Connected={stt_is_connected}, Status={orchestration_service.stt_service.get_status()}, IsRunning={orchestration_service.stt_service.is_running}")
+                        if stt_is_connected:
+                            # Count frames and log summary periodically
+                            audio_frames_sent += 1
+                            now = time.time()
+                            if now - last_audio_log_time >= audio_log_interval:
+                                logger.info(f"[WebSocket] Processed {audio_frames_sent} audio frames in last {audio_log_interval:.1f}s")
+                                audio_frames_sent = 0
+                                last_audio_log_time = now
                             else:
-                                # Rate-limit repeated STT-not-connected error logs
-                                if now - last_stt_error_time >= stt_error_interval:
-                                    current_status = orchestration_service.stt_service.get_status()
-                                    logger.error(f"[WebSocket] STT service not connected: Status={current_status}, IsRunning={orchestration_service.stt_service.is_running}, WebSocketExists={orchestration_service.stt_service.ws is not None}")
-                                    last_stt_error_time = now
-
-                        except Exception as e:
-                            logger.error(f"Error processing audio: {e}")
-                            import traceback
-                            logger.error(traceback.format_exc())
+                                logger.debug("[WebSocket] Sending audio frame to STT")
+                            task = asyncio.create_task(
+                                orchestration_service.stt_service.send_audio_base64(audio_data)
+                            )
+                            background_tasks.add(task)
+                            task.add_done_callback(background_tasks.discard)
+                            # Check cancellation after creating task
+                            if cancel_event.is_set():
+                                logger.info("[WebSocket] Cancellation requested during audio processing")
+                                break
+                    except Exception as e:
+                        logger.error(f"Error processing audio: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                    # Do not disable listening after each audio frame; remain in listening state until user action
 
                 elif message_type == "text":
                     # Handle direct text input

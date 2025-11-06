@@ -298,26 +298,26 @@ class LiveKitOrchestrationService:
             else:
                 logger.warning("[WebSocket] No transcript callback available")
 
-            # If transcript is final, send to LLM and also generate customer voice
+            # If transcript is final, first generate customer voice, then send to LLM
             if is_final and text.strip():
+                # 1. Generate and play customer TTS (agent's message)
+                if self.customer_tts_service:
+                    logger.info("[TTS] Generating customer voice for transcript (agent message)")
+                    await self.customer_tts_service.stream_text_to_speech(text)
+                else:
+                    logger.warning("[TTS] Customer TTS service not available")
+
+                # 2. After customer TTS is done, proceed to LLM
                 logger.info(f"[LLM] Processing final transcript: '{text}'")
                 self.status = AgentStatus.THINKING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
 
-                # Send to Groq LLM with streaming
                 if self.groq_service:
                     logger.info("[LLM] Sending message to Groq service")
                     await self.groq_service.stream_message(text)
                 else:
                     logger.warning("[LLM] Groq service not available")
-
-                # Also generate customer voice for the transcript
-                if self.customer_tts_service:
-                    logger.info("[TTS] Generating customer voice for transcript")
-                    await self.customer_tts_service.stream_text_to_speech(text)
-                else:
-                    logger.warning("[TTS] Customer TTS service not available")
 
         except Exception as e:
             logger.error(f"Error handling transcript: {e}")

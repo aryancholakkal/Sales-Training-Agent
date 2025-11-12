@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     
     # Deepgram Configuration (Speech-to-Text)
     deepgram_api_key: str
+    deepgram_stream_params: str | None = None
     
     # Groq Configuration (LLM)
     groq_api_key: str
@@ -51,6 +52,7 @@ class Settings(BaseSettings):
     audio_sample_rate: int = 16000
     audio_channels: int = 1
     audio_chunk_size: int = 1024
+    user_pause_ms: int = 1200
 
     # Product Configuration
     product_name: str = "the 'Radiant Glow Skincare Set'"

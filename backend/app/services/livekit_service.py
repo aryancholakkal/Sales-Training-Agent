@@ -9,6 +9,7 @@ from livekit import api, rtc
 # Note: livekit.agents imports temporarily commented out due to version compatibility
 # from livekit.agents import llm, stt, tts, vad
 from ..models.session import AgentStatus
+from ..core.config import get_settings
 from .groq_service import GroqService
 from .deepgram_service import DeepgramService
 from .openai_service import OpenAITTSService
@@ -47,6 +48,14 @@ class LiveKitOrchestrationService:
         self._last_user_final_ts: float = 0.0
         self._current_tts_task: Optional[asyncio.Task] = None
         self._tts_interrupting: bool = False
+
+        # Deferred user processing to handle natural pauses
+        self._settings = get_settings()
+        pause_ms = max(self._settings.user_pause_ms, 0)
+        self._user_pause_delay = max(0.1, pause_ms / 1000.0)
+        self._pending_user_task: Optional[asyncio.Task] = None
+        self._pending_user_transcripts: Dict[int, str] = {}
+        self._pending_user_order: List[int] = []
 
     async def initialize_session(
         self,
@@ -107,7 +116,10 @@ class LiveKitOrchestrationService:
                     raise ValueError("Deepgram API key is required")
                 
                 # Create service instance
-                self.stt_service = DeepgramService(deepgram_api_key)
+                self.stt_service = DeepgramService(
+                    deepgram_api_key,
+                    extra_query_params=self._settings.deepgram_stream_params,
+                )
                 logger.info("Deepgram service instance created successfully")
 
                 # Initialize session with detailed error reporting
@@ -280,32 +292,32 @@ class LiveKitOrchestrationService:
             else:
                 logger.debug(log_message)
 
-            if not is_final and text and transcript_data.get("speaker") == "Trainee":
-                if self.is_ai_speaking():
-                    await self.interrupt_ai_speech("trainee_started_speaking")
+            if transcript_data.get("speaker") == "Trainee":
+                if not is_final and text:
+                    if self.is_ai_speaking():
+                        await self.interrupt_ai_speech("trainee_started_speaking")
+                    self._schedule_user_processing(text, transcript_data.get("id"))
+                elif is_final and text:
+                    self._finalize_user_processing(text, transcript_data.get("id"))
+
+                if self._on_transcript_callback:
+                    await self._on_transcript_callback({
+                        "text": raw_text,
+                        "is_final": is_final,
+                        "confidence": confidence,
+                        "speaker": "Trainee"
+                    })
+                else:
+                    logger.debug("[WebSocket] No transcript callback available")
+                return
 
             if self._on_transcript_callback:
                 await self._on_transcript_callback({
                     "text": raw_text,
                     "is_final": is_final,
                     "confidence": confidence,
-                    "speaker": "Trainee"
+                    "speaker": "Customer"
                 })
-            else:
-                logger.debug("[WebSocket] No transcript callback available")
-
-            if not text:
-                return
-
-            if is_final:
-                now = time.monotonic()
-                if text == self._last_final_user_text and (now - self._last_user_final_ts) < 1.0:
-                    logger.debug("[LLM] Skipping duplicate final transcript from trainee")
-                    return
-
-                self._last_final_user_text = text
-                self._last_user_final_ts = now
-                await self._handle_final_user_transcript(text)
 
         except Exception as e:
             logger.error(f"Error handling transcript: {e}")
@@ -331,11 +343,95 @@ class LiveKitOrchestrationService:
         except Exception as e:
             logger.error(f"Error while handling final transcript: {e}")
 
+    def _resolve_transcript_id(self, transcript_id: Optional[Any]) -> int:
+        if isinstance(transcript_id, int):
+            return transcript_id
+        if isinstance(transcript_id, str):
+            if transcript_id.isdigit():
+                return int(transcript_id)
+            return abs(hash(transcript_id))
+        if transcript_id is None:
+            # Deepgram real-time transcripts often omit an identifier for the
+            # current utterance; treat them as a single rolling buffer per
+            # speaker so partial packets overwrite the pending text instead of
+            # queueing multiple LLM turns.
+            return 0
+        return abs(hash(str(transcript_id)))
+
+    def _schedule_user_processing(self, transcript: str, transcript_id: Optional[Any]):
+        resolved_id = self._resolve_transcript_id(transcript_id)
+
+        self._pending_user_transcripts[resolved_id] = transcript
+        if resolved_id not in self._pending_user_order:
+            self._pending_user_order.append(resolved_id)
+
+        self._start_user_dispatch_timer()
+
+    def _finalize_user_processing(self, transcript: str, transcript_id: Optional[Any]):
+        resolved_id = self._resolve_transcript_id(transcript_id)
+
+        self._pending_user_transcripts[resolved_id] = transcript
+        if resolved_id not in self._pending_user_order:
+            self._pending_user_order.append(resolved_id)
+
+        # Final transcripts still wait for the configured pause window to avoid
+        # interrupting trainees who continue speaking after brief silences.
+        self._start_user_dispatch_timer()
+
+    def _start_user_dispatch_timer(self, delay: Optional[float] = None):
+        wait_seconds = self._user_pause_delay if delay is None else max(0.0, delay)
+
+        if self._pending_user_task is not None and not self._pending_user_task.done():
+            self._pending_user_task.cancel()
+
+        self._pending_user_task = asyncio.create_task(self._deferred_user_dispatch(wait_seconds))
+
+    async def _deferred_user_dispatch(self, wait_seconds: float):
+        current_task = asyncio.current_task()
+        try:
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+
+            if not self._is_active or not self._pending_user_order:
+                return
+
+            transcript_id = self._pending_user_order.pop(0)
+            transcript_text = self._pending_user_transcripts.pop(transcript_id, "").strip()
+
+            if not transcript_text:
+                return
+
+            now = time.monotonic()
+            if transcript_text == self._last_final_user_text and (now - self._last_user_final_ts) < 0.5:
+                logger.debug("[LLM] Skipping duplicate deferred transcript")
+                return
+
+            self._last_final_user_text = transcript_text
+            self._last_user_final_ts = now
+            await self._handle_final_user_transcript(transcript_text)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error(f"Error in deferred user dispatch: {exc}")
+        finally:
+            if self._pending_user_task is current_task:
+                self._pending_user_task = None
+                if self._pending_user_order and self._is_active:
+                    # Additional messages that accumulated while we were waiting
+                    # should process without an extra pause.
+                    self._start_user_dispatch_timer(delay=0.0)
+
     def reset_turn_state(self):
         """Clear cached turn tracking data for a fresh conversation."""
         self._last_final_user_text = None
         self._last_ai_response = None
         self._last_user_final_ts = 0.0
+        if self._pending_user_task is not None and not self._pending_user_task.done():
+            self._pending_user_task.cancel()
+        self._pending_user_task = None
+        self._pending_user_transcripts.clear()
+        self._pending_user_order.clear()
 
     def is_ai_speaking(self) -> bool:
         """Return True when the AI is currently streaming speech audio."""

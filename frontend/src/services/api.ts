@@ -34,6 +34,35 @@ export interface TranscriptMessage {
   confidence?: number;
 }
 
+export type EvaluationCategoryName =
+  | 'Grammar & Clarity'
+  | 'Tone & Empathy'
+  | 'Product Knowledge'
+  | 'Response Strategy'
+  | 'Sales Effectiveness';
+
+export interface EvaluationCategoryFeedback {
+  category: EvaluationCategoryName;
+  score: number;
+  comment: string;
+}
+
+export interface EvaluationResponse {
+  report_id: string;
+  persona_id: string;
+  product_id?: string;
+  created_at: string;
+  overall_score: number;
+  summary_feedback: string;
+  detailed_feedback: EvaluationCategoryFeedback[];
+}
+
+export interface EvaluationRequest {
+  persona_id: string;
+  product_id?: string;
+  transcript: TranscriptMessage[];
+}
+
 export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export class ApiService {
@@ -76,6 +105,28 @@ export class ApiService {
       return data.products;
     } catch (error) {
       console.error('Error fetching products:', error);
+      throw error;
+    }
+  }
+
+  static async evaluateConversation(payload: EvaluationRequest): Promise<EvaluationResponse> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/evaluations/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `Evaluation failed with status ${response.status}`);
+      }
+
+      return (await response.json()) as EvaluationResponse;
+    } catch (error) {
+      console.error('Error evaluating conversation:', error);
       throw error;
     }
   }

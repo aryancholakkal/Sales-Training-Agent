@@ -4,7 +4,7 @@ from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
-from app.api.routes import personas, websocket, products
+from app.api.routes import personas, websocket, products, evaluations
 
 # Configure logging
 # Ensure logs directory exists under backend/logs
@@ -53,6 +53,7 @@ app.add_middleware(
 app.include_router(products.router, prefix="/api/products", tags=["products"])
 app.include_router(personas.router, prefix="/api/personas", tags=["personas"])
 app.include_router(websocket.router, prefix="/api/ws", tags=["websocket"])
+app.include_router(evaluations.router, prefix="/api/evaluations", tags=["evaluations"])
 
 
 @app.get("/")

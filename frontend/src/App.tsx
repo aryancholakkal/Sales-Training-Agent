@@ -1,8 +1,16 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Persona, AgentStatus, TranscriptMessage, ApiService, Product } from './services/api';
+import {
+    Persona,
+    AgentStatus,
+    TranscriptMessage,
+    ApiService,
+    Product,
+    EvaluationResponse,
+} from './services/api';
 import { WebSocketService } from './services/websocket';
 import { decode, decodeAudioData } from './utils/audio';
 import { MicrophoneIcon, SpeakerIcon, LoadingSpinner } from './components/Icons';
+import { EvaluationReport } from './components/EvaluationReport';
 
 const ProductSelector: React.FC<{ onSelect: (product: Product) => void }> = ({ onSelect }) => {
     const [products, setProducts] = useState<Product[]>([]);
@@ -171,8 +179,10 @@ const SimulationView: React.FC<{
     product: Product;
     status: AgentStatus;
     transcripts: TranscriptMessage[];
-    onEnd: () => void;
-}> = ({ persona, product, status, transcripts, onEnd }) => {
+    onEnd: () => void | Promise<void>;
+    isEnding: boolean;
+    sessionEnded: boolean;
+}> = ({ persona, product, status, transcripts, onEnd, isEnding, sessionEnded }) => {
     const transcriptEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -180,6 +190,10 @@ const SimulationView: React.FC<{
     }, [transcripts]);
 
     const getStatusIndicator = () => {
+        if (sessionEnded) {
+            return <span className="text-brand-accent">Session complete</span>;
+        }
+
         switch (status) {
             case 'connecting':
                 return <><LoadingSpinner className="w-6 h-6 mr-2" /> Connecting...</>;
@@ -224,13 +238,25 @@ const SimulationView: React.FC<{
                 ))}
                 <div ref={transcriptEndRef} />
             </div>
-            <div className="mt-6 flex justify-center">
-                <button
-                    onClick={onEnd}
-                    className="px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full transition-colors duration-300"
-                >
-                    End Simulation
-                </button>
+            <div className="mt-6 flex justify-center min-h-[48px]">
+                {!sessionEnded ? (
+                    <button
+                        onClick={onEnd}
+                        disabled={isEnding}
+                        className={`px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full transition-colors duration-300 flex items-center gap-2 ${isEnding ? 'opacity-75 cursor-not-allowed' : ''}`}
+                    >
+                        {isEnding ? (
+                            <>
+                                <LoadingSpinner className="w-5 h-5" />
+                                <span>Ending...</span>
+                            </>
+                        ) : (
+                            'End Simulation'
+                        )}
+                    </button>
+                ) : (
+                    <p className="text-sm text-slate-400">Conversation ended. Review the evaluation below.</p>
+                )}
             </div>
         </div>
     );
@@ -242,6 +268,11 @@ export default function App() {
     const [isSimulating, setIsSimulating] = useState(false);
     const [status, setStatus] = useState<AgentStatus>('idle');
     const [transcripts, setTranscripts] = useState<TranscriptMessage[]>([]);
+    const [evaluationResult, setEvaluationResult] = useState<EvaluationResponse | null>(null);
+    const [evaluationStatus, setEvaluationStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+    const [evaluationError, setEvaluationError] = useState<string | null>(null);
+    const [sessionEnded, setSessionEnded] = useState(false);
+    const [isEndingSimulation, setIsEndingSimulation] = useState(false);
 
     const wsServiceRef = useRef<WebSocketService | null>(null);
     const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -292,6 +323,11 @@ export default function App() {
         setSelectedPersona(null);
         setTranscripts([]);
         setStatus('idle');
+        setEvaluationResult(null);
+        setEvaluationStatus('idle');
+        setEvaluationError(null);
+        setSessionEnded(false);
+        setIsEndingSimulation(false);
         nextTranscriptIdRef.current = 0;
     }, [isSimulating, stopAllPlayback]);
 
@@ -309,6 +345,11 @@ export default function App() {
         setSelectedPersona(null);
         setTranscripts([]);
         setStatus('idle');
+        setEvaluationResult(null);
+        setEvaluationStatus('idle');
+        setEvaluationError(null);
+        setSessionEnded(false);
+        setIsEndingSimulation(false);
         nextTranscriptIdRef.current = 0;
     }, [isSimulating, stopAllPlayback]);
 
@@ -343,12 +384,52 @@ export default function App() {
         return clearPendingTimeout;
     }, [isSimulating, workletReady, micMuted, status, updateWorkletListening]);
 
+    const terminateActiveSession = useCallback(() => {
+        console.log('[App] Terminating active session resources');
+
+        if (captureTimeoutRef.current !== null) {
+            window.clearTimeout(captureTimeoutRef.current);
+            captureTimeoutRef.current = null;
+        }
+
+        updateWorkletListening(false);
+        setMicMuted(false);
+        stopAllPlayback();
+
+        if (wsServiceRef.current) {
+            wsServiceRef.current.endSession();
+            wsServiceRef.current = null;
+        }
+
+        workletNodeRef.current?.disconnect();
+        workletNodeRef.current = null;
+
+        microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
+        microphoneStreamRef.current = null;
+
+        inputAudioContextRef.current?.close();
+        outputAudioContextRef.current?.close();
+        inputAudioContextRef.current = null;
+        outputAudioContextRef.current = null;
+
+        sourcesRef.current.clear();
+
+        setIsSimulating(false);
+        setStatus('idle');
+        setWorkletReady(false);
+    }, [stopAllPlayback, updateWorkletListening]);
+
     const startSimulation = useCallback(async (persona: Persona) => {
         if (!selectedProduct) {
             alert('Please select a product before starting the simulation.');
             return;
         }
 
+        setEvaluationResult(null);
+        setEvaluationStatus('idle');
+        setEvaluationError(null);
+        setSessionEnded(false);
+        setIsEndingSimulation(false);
         setMicMuted(false);
         setStatus('connecting');
         setSelectedPersona(persona);
@@ -382,33 +463,62 @@ export default function App() {
 
                         // Helper to merge incoming transcript chunks with existing text while
                         // avoiding duplication from overlapping partial/final chunks.
-                        const mergeTranscript = (existingText: string, incoming: string) => {
-                            if (!incoming) return existingText;
-                            if (!existingText) return incoming;
-                            // Exact match -> keep existing
-                            if (existingText === incoming) return existingText;
-                            // If existing already ends with the incoming chunk, skip
-                            if (existingText.endsWith(incoming)) return existingText;
-                            // If incoming starts with existing, incoming contains existing as prefix -> return incoming (longer)
-                            if (incoming.startsWith(existingText)) return incoming;
+                        const mergeTranscript = (
+                            existingText: string,
+                            incoming: string,
+                            speakerLabel: TranscriptMessage['speaker'],
+                            isFinal: boolean
+                        ) => {
+                            if (isFinal) {
+                                return incoming;
+                            }
 
-                            // Find the largest overlap where the end of existing matches the start of incoming
-                            const maxOverlap = Math.min(existingText.length, incoming.length);
+                            if (!incoming) {
+                                return existingText;
+                            }
+                            if (!existingText) {
+                                return incoming;
+                            }
+                            if (speakerLabel === 'Trainee') {
+                                if (existingText === incoming) {
+                                    return existingText;
+                                }
+                                if (incoming.includes(existingText)) {
+                                    return incoming;
+                                }
+                                if (existingText.includes(incoming)) {
+                                    return existingText;
+                                }
+                                return incoming;
+                            }
+
+                            if (existingText === incoming) {
+                                return existingText;
+                            }
+                            if (existingText.endsWith(incoming)) {
+                                return existingText;
+                            }
+                            if (incoming.startsWith(existingText)) {
+                                return incoming;
+                            }
+
+                            const sanitizedExisting = existingText.trimEnd();
+                            const sanitizedIncoming = incoming.trimStart();
+                            const maxOverlap = Math.min(sanitizedExisting.length, sanitizedIncoming.length);
                             for (let k = maxOverlap; k > 0; k--) {
-                                if (existingText.endsWith(incoming.substring(0, k))) {
-                                    return existingText + incoming.substring(k);
+                                if (sanitizedExisting.endsWith(sanitizedIncoming.substring(0, k))) {
+                                    return `${sanitizedExisting}${sanitizedIncoming.substring(k)}`;
                                 }
                             }
 
-                            // No overlap found -> concatenate
-                            return existingText + incoming;
+                            return `${sanitizedExisting} ${sanitizedIncoming}`.replace(/\s+/g, ' ').trim();
                         };
 
                         const updateEntryAt = (index: number) => {
                             const updated = [...prev];
                             const existing = updated[index];
-                            const mergedText = mergeTranscript(existing.text, transcript.text);
                             const isFinal = transcript.is_final ?? existing.is_final ?? false;
+                            const mergedText = mergeTranscript(existing.text, transcript.text, transcript.speaker, isFinal);
                             const confidence = transcript.confidence ?? existing.confidence;
 
                             if (existing.text === mergedText && existing.is_final === isFinal && existing.confidence === confidence) {
@@ -600,62 +710,119 @@ export default function App() {
             console.error("Failed to start simulation:", error);
             setStatus('error');
             alert("Could not start audio. Please check microphone permissions and backend connection.");
-            endSimulation();
+            terminateActiveSession();
         }
-    }, [handleAudioStop, selectedProduct, updateWorkletListening]);
+    }, [handleAudioStop, selectedProduct, terminateActiveSession, updateWorkletListening]);
 
-    const endSimulation = useCallback(() => {
-        console.log('[App] Ending simulation and resetting to first screen');
-
-        // Disable microphone capture immediately
-        if (captureTimeoutRef.current !== null) {
-            window.clearTimeout(captureTimeoutRef.current);
-            captureTimeoutRef.current = null;
-        }
-        updateWorkletListening(false);
-        setMicMuted(false);
-        stopAllPlayback();
-
-        // Close WebSocket connection
-        if (wsServiceRef.current) {
-            wsServiceRef.current.endSession();
-            wsServiceRef.current = null;
+    const evaluateConversation = useCallback(async () => {
+        const persona = selectedPersona;
+        if (!persona) {
+            setEvaluationStatus('error');
+            setEvaluationError('No persona selected for evaluation.');
+            return;
         }
 
-        // Clean up audio
-        workletNodeRef.current?.disconnect();
-        workletNodeRef.current = null;
+        const meaningfulTranscripts = transcripts.filter((message) => {
+            if (message.is_final === false) {
+                return false;
+            }
+            return Boolean(message.text && message.text.trim());
+        });
 
-        microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
-        microphoneStreamRef.current = null;
+        if (!meaningfulTranscripts.length) {
+            setEvaluationStatus('error');
+            setEvaluationError('No transcript content was captured for evaluation.');
+            return;
+        }
 
-        inputAudioContextRef.current?.close();
-        outputAudioContextRef.current?.close();
-        inputAudioContextRef.current = null;
-        outputAudioContextRef.current = null;
+        try {
+            const response = await ApiService.evaluateConversation({
+                persona_id: persona.id,
+                product_id: selectedProduct?.id,
+                transcript: meaningfulTranscripts,
+            });
+            setEvaluationResult(response);
+            setEvaluationStatus('success');
+        } catch (error) {
+            console.error('Evaluation request failed:', error);
+            const message = error instanceof Error ? error.message : 'Failed to generate evaluation report.';
+            setEvaluationStatus('error');
+            setEvaluationError(message);
+        }
+    }, [selectedPersona, selectedProduct, transcripts]);
 
-        sourcesRef.current.clear();
+    const endSimulation = useCallback(async () => {
+        if (isEndingSimulation) {
+            return;
+        }
 
-        setIsSimulating(false);
+        setIsEndingSimulation(true);
+        setSessionEnded(true);
+        setEvaluationStatus('loading');
+        setEvaluationError(null);
+        setEvaluationResult(null);
+
+        terminateActiveSession();
+
+        try {
+            await evaluateConversation();
+        } finally {
+            setIsEndingSimulation(false);
+        }
+    }, [evaluateConversation, isEndingSimulation, terminateActiveSession]);
+
+    const retryEvaluation = useCallback(async () => {
+        setEvaluationStatus('loading');
+        setEvaluationError(null);
+        setEvaluationResult(null);
+        await evaluateConversation();
+    }, [evaluateConversation]);
+
+    const handleDownloadReport = useCallback(() => {
+        if (!evaluationResult) {
+            return;
+        }
+
+        const payload = {
+            ...evaluationResult,
+            transcript: transcripts,
+        };
+
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `sales-evaluation-${evaluationResult.report_id}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+    }, [evaluationResult, transcripts]);
+
+    const startNewSimulation = useCallback(() => {
+        terminateActiveSession();
+        setEvaluationStatus('idle');
+        setEvaluationResult(null);
+        setEvaluationError(null);
+        setSessionEnded(false);
+        setIsEndingSimulation(false);
         setSelectedPersona(null);
         setTranscripts([]);
         setStatus('idle');
         nextTranscriptIdRef.current = 0;
-        setWorkletReady(false);
-    }, [stopAllPlayback, updateWorkletListening]);
+    }, [terminateActiveSession]);
     
     useEffect(() => {
-        // Cleanup on unmount
         return () => {
-            if(isSimulating) {
-                endSimulation();
-            }
+            terminateActiveSession();
         };
-    }, [isSimulating, endSimulation]);
+    }, [terminateActiveSession]);
 
     const inSelectionMode = !selectedProduct;
-    const showingPersonaSelection = selectedProduct && (!isSimulating || !selectedPersona);
-    const showingSimulation = Boolean(selectedProduct && selectedPersona && isSimulating);
+    const showingPersonaSelection = Boolean(selectedProduct && !selectedPersona);
+    const showingSimulation = Boolean(
+        selectedProduct &&
+        selectedPersona &&
+        (isSimulating || transcripts.length > 0)
+    );
 
     return (
         <main className="min-h-screen w-full flex flex-col items-center justify-center p-4 bg-gradient-to-br from-brand-dark to-slate-900 font-sans">
@@ -692,18 +859,37 @@ export default function App() {
                         status={status}
                         transcripts={transcripts}
                         onEnd={endSimulation}
+                        isEnding={isEndingSimulation}
+                        sessionEnded={sessionEnded}
                     />
-                    <div className="flex justify-center mt-4 gap-4">
-                        <button
-                            className={`px-8 py-3 ${micMuted ? 'bg-slate-600 hover:bg-slate-500' : 'bg-green-600 hover:bg-green-700'} text-white font-bold rounded-full transition-colors duration-300 ${!workletReady ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            onClick={() => setMicMuted((prev) => !prev)}
-                            disabled={!workletReady}
-                        >
-                            <MicrophoneIcon className="w-6 h-6 mr-2 inline-block" /> {micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-                        </button>
-                    </div>
-                    <p className="text-center text-sm text-slate-300 mt-2">Your microphone starts automatically when the AI is ready. Use the toggle to mute at any time.</p>
+                    {isSimulating && !sessionEnded && (
+                        <>
+                            <div className="flex justify-center mt-4 gap-4">
+                                <button
+                                    className={`px-8 py-3 ${micMuted ? 'bg-slate-600 hover:bg-slate-500' : 'bg-green-600 hover:bg-green-700'} text-white font-bold rounded-full transition-colors duration-300 ${!workletReady ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    onClick={() => setMicMuted((prev) => !prev)}
+                                    disabled={!workletReady}
+                                >
+                                    <MicrophoneIcon className="w-6 h-6 mr-2 inline-block" /> {micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+                                </button>
+                            </div>
+                            <p className="text-center text-sm text-slate-300 mt-2">Your microphone starts automatically when the AI is ready. Use the toggle to mute at any time.</p>
+                        </>
+                    )}
                 </div>
+            )}
+
+            {selectedPersona && evaluationStatus !== 'idle' && (
+                <EvaluationReport
+                    evaluation={evaluationResult}
+                    status={evaluationStatus}
+                    error={evaluationError}
+                    onRetry={retryEvaluation}
+                    onRestart={startNewSimulation}
+                    onDownload={handleDownloadReport}
+                    persona={selectedPersona}
+                    product={selectedProduct}
+                />
             )}
         </main>
     );

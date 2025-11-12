@@ -107,8 +107,8 @@ const SimulationView: React.FC<{
                 </div>
             </div>
             <div className="flex-grow overflow-y-auto pr-4 space-y-4">
-                {transcripts.map((t) => (
-                    <div key={t.id} className={`flex items-start gap-3 ${t.speaker === 'Trainee' ? 'justify-end' : 'justify-start'}`}>
+                {transcripts.map((t, index) => (
+                    <div key={t.id ?? `transcript-${index}`} className={`flex items-start gap-3 ${t.speaker === 'Trainee' ? 'justify-end' : 'justify-start'}`}>
                        {t.speaker === 'Customer' && <div className="w-10 h-10 rounded-full bg-brand-primary flex items-center justify-center text-xl flex-shrink-0">{persona.avatar}</div>}
                        <div className={`max-w-md p-3 rounded-xl ${t.speaker === 'Trainee' ? 'bg-brand-secondary text-white' : 'bg-brand-dark text-brand-light'}`}>
                           <p className="font-bold text-sm mb-1">{t.speaker}</p>
@@ -132,21 +132,6 @@ const SimulationView: React.FC<{
 };
 
 export default function App() {
-    // Manual stop listening handler
-    const handleStopListening = useCallback(() => {
-        console.log('[App] Stop Listening button pressed');
-        // Notify backend to stop listening if connected
-        if (wsServiceRef.current && wsServiceRef.current.isConnected()) {
-            wsServiceRef.current.sendStopListening();
-        }
-        // Clear any pending start request and disable local audio capture immediately
-        pendingStartListeningRef.current = false;
-        isListeningRef.current = false;
-        setIsListening(false);
-        if (workletNodeRef.current) {
-            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
-        }
-    }, []);
     const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
     const [isSimulating, setIsSimulating] = useState(false);
     const [status, setStatus] = useState<AgentStatus>('idle');
@@ -160,35 +145,72 @@ export default function App() {
     const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
     const nextStartTimeRef = useRef<number>(0);
     const nextTranscriptIdRef = useRef<number>(0);
-    const isListeningRef = useRef<boolean>(false);
-    const [isListening, setIsListening] = useState(false);
+    const captureAudioRef = useRef<boolean>(false);
+    const captureTimeoutRef = useRef<number | null>(null);
+    const [micMuted, setMicMuted] = useState(false);
 
     // Track if worklet is ready
     const [workletReady, setWorkletReady] = useState(false);
-    // Track if user has requested listening
-    const pendingStartListeningRef = useRef(false);
-    // Manual start listening handler
-    const handleStartListening = useCallback(() => {
-        console.log('[App] Start Listening button pressed');
-        // Attempt to notify backend to start listening
-        if (wsServiceRef.current && wsServiceRef.current.isConnected()) {
-            wsServiceRef.current.sendStartListening();
-        }
-        // Mark that user requested start; enable local audio capture immediately so the UI
-        // is responsive (un-gray the buttons). If backend later confirms, nothing changes.
-        pendingStartListeningRef.current = true;
-        isListeningRef.current = true;
-        setIsListening(true);
-        if (workletNodeRef.current) {
-            workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
+
+    const stopAllPlayback = useCallback(() => {
+        sourcesRef.current.forEach((source) => {
+            try {
+                source.stop();
+            } catch (err) {
+                console.debug('[App] Audio source stop error', err);
+            }
+        });
+        sourcesRef.current.clear();
+        if (outputAudioContextRef.current) {
+            const ctx = outputAudioContextRef.current;
+            nextStartTimeRef.current = ctx.currentTime;
         }
     }, []);
 
+    const handleAudioStop = useCallback((reason?: string) => {
+        console.debug('[App] Received audio stop signal', reason);
+        stopAllPlayback();
+        setStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
+    }, [stopAllPlayback]);
+
+    const updateWorkletListening = useCallback((value: boolean) => {
+        captureAudioRef.current = value;
+        if (workletNodeRef.current) {
+            workletNodeRef.current.port.postMessage({ type: 'setListening', value });
+        }
+    }, []);
+
+    useEffect(() => {
+        const clearPendingTimeout = () => {
+            if (captureTimeoutRef.current !== null) {
+                window.clearTimeout(captureTimeoutRef.current);
+                captureTimeoutRef.current = null;
+            }
+        };
+
+        if (!isSimulating || !workletReady || micMuted || status === 'error') {
+            clearPendingTimeout();
+            updateWorkletListening(false);
+        } else if (status === 'listening') {
+            clearPendingTimeout();
+            updateWorkletListening(true);
+        } else if (captureTimeoutRef.current === null) {
+            captureTimeoutRef.current = window.setTimeout(() => {
+                updateWorkletListening(false);
+                captureTimeoutRef.current = null;
+            }, 3000);
+        }
+
+        return clearPendingTimeout;
+    }, [isSimulating, workletReady, micMuted, status, updateWorkletListening]);
+
     const startSimulation = useCallback(async (persona: Persona) => {
+        setMicMuted(false);
         setStatus('connecting');
         setSelectedPersona(persona);
         setIsSimulating(true);
         setTranscripts([]);
+        nextTranscriptIdRef.current = 0;
 
         try {
             // Get microphone access
@@ -204,27 +226,14 @@ export default function App() {
             wsServiceRef.current = new WebSocketService(
                 (newStatus: AgentStatus) => {
                     setStatus(newStatus);
-                    // If backend confirms listening, clear pending flag and ensure local capture is enabled
-                    if (newStatus === 'listening') {
-                        console.log('[App] Backend status is listening');
-                        pendingStartListeningRef.current = false;
-                        isListeningRef.current = true;
-                        setIsListening(true);
-                        if (workletNodeRef.current) {
-                            workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
-                        }
-                    } else if (newStatus === 'idle' || newStatus === 'error') {
-                        // If backend drops to idle or an error occurs, clear pending and disable local capture
-                        pendingStartListeningRef.current = false;
-                        isListeningRef.current = false;
-                        setIsListening(false);
-                        if (workletNodeRef.current) {
-                            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
-                        }
-                    }
                 },
                 (transcript: TranscriptMessage) => {
                     setTranscripts(prev => {
+                        const incomingId = transcript.id;
+                        if (typeof incomingId === 'number') {
+                            nextTranscriptIdRef.current = Math.max(nextTranscriptIdRef.current, incomingId + 1);
+                        }
+
                         // Helper to merge incoming transcript chunks with existing text while
                         // avoiding duplication from overlapping partial/final chunks.
                         const mergeTranscript = (existingText: string, incoming: string) => {
@@ -249,6 +258,33 @@ export default function App() {
                             return existingText + incoming;
                         };
 
+                        const updateEntryAt = (index: number) => {
+                            const updated = [...prev];
+                            const existing = updated[index];
+                            const mergedText = mergeTranscript(existing.text, transcript.text);
+                            const isFinal = transcript.is_final ?? existing.is_final ?? false;
+                            const confidence = transcript.confidence ?? existing.confidence;
+
+                            if (existing.text === mergedText && existing.is_final === isFinal && existing.confidence === confidence) {
+                                return prev;
+                            }
+
+                            updated[index] = {
+                                ...existing,
+                                text: mergedText,
+                                is_final: isFinal,
+                                confidence
+                            };
+                            return updated;
+                        };
+
+                        if (typeof incomingId === 'number') {
+                            const targetIndex = prev.findIndex(message => message.id === incomingId && message.speaker === transcript.speaker);
+                            if (targetIndex >= 0) {
+                                return updateEntryAt(targetIndex);
+                            }
+                        }
+
                         // Only stream for Customer (AI) messages
                         if (transcript.speaker === 'Customer') {
                             // Find last AI message
@@ -259,13 +295,7 @@ export default function App() {
                                 !prev[lastIdx].is_final
                             ) {
                                 // Update last message but avoid duplicating repeated chunks
-                                const updated = [...prev];
-                                updated[lastIdx] = {
-                                    ...updated[lastIdx],
-                                    text: mergeTranscript(updated[lastIdx].text, transcript.text),
-                                    is_final: transcript.is_final,
-                                };
-                                return updated;
+                                return updateEntryAt(lastIdx);
                             } else {
                                 // Avoid adding a new message if the last message already has identical text
                                 const lastIdx2 = prev.length - 1;
@@ -273,11 +303,14 @@ export default function App() {
                                     return prev;
                                 }
                                 // Add new streaming message
+                                const resolvedId = typeof incomingId === 'number' ? incomingId : nextTranscriptIdRef.current++;
+                                nextTranscriptIdRef.current = Math.max(nextTranscriptIdRef.current, resolvedId + 1);
                                 return [
                                     ...prev,
                                     {
                                         ...transcript,
-                                        id: nextTranscriptIdRef.current++,
+                                        id: resolvedId,
+                                        is_final: transcript.is_final ?? false
                                     },
                                 ];
                             }
@@ -289,25 +322,21 @@ export default function App() {
                                 prev[lastIdx].speaker === 'Trainee' &&
                                 !prev[lastIdx].is_final
                             ) {
-                                const updated = [...prev];
-                                updated[lastIdx] = {
-                                    ...updated[lastIdx],
-                                    text: mergeTranscript(updated[lastIdx].text, transcript.text),
-                                    is_final: transcript.is_final,
-                                };
-                                return updated;
+                                return updateEntryAt(lastIdx);
                             } else {
-                                // Avoid adding a new message if the last message already has identical text
                                 const lastIdx2 = prev.length - 1;
                                 if (lastIdx2 >= 0 && prev[lastIdx2].text === transcript.text && prev[lastIdx2].speaker === 'Trainee') {
                                     return prev;
                                 }
                                 // Add new streaming message
+                                const resolvedId = typeof incomingId === 'number' ? incomingId : nextTranscriptIdRef.current++;
+                                nextTranscriptIdRef.current = Math.max(nextTranscriptIdRef.current, resolvedId + 1);
                                 return [
                                     ...prev,
                                     {
                                         ...transcript,
-                                        id: nextTranscriptIdRef.current++,
+                                        id: resolvedId,
+                                        is_final: transcript.is_final ?? false
                                     },
                                 ];
                             }
@@ -325,7 +354,7 @@ export default function App() {
                     encoding?: string
                 ) => {
                     // Handle incoming audio from backend
-                    console.log('[App] Received audio data from backend');
+                    console.debug('[App] Received audio data from backend');
                     console.debug('[App] audio metadata', { mimeType, sampleRate, channels, bitRate, codec, bitDepth, encoding });
                     if (outputAudioContextRef.current) {
                         const outputAudioContext = outputAudioContextRef.current;
@@ -362,7 +391,7 @@ export default function App() {
                             source.addEventListener('ended', () => {
                                 sourcesRef.current.delete(source);
                                 if (sourcesRef.current.size === 0) {
-                                    console.log('[App] All audio sources ended, setting status to listening');
+                                    console.debug('[App] All audio sources ended, setting status to listening');
                                     setStatus('listening');
                                     // Do not automatically re-enable or disable listening; only user controls it
                                 }
@@ -375,6 +404,7 @@ export default function App() {
                         }
                     }
                 },
+                handleAudioStop,
                 (error: string) => {
                     console.error('WebSocket error:', error);
                     setStatus('error');
@@ -397,23 +427,21 @@ export default function App() {
                 const workletNode = new AudioWorkletNode(inputAudioContext, 'audio-processor');
                 workletNodeRef.current = workletNode;
 
-                // Start with listening disabled; user must click button
-                isListeningRef.current = false;
-                setIsListening(false);
-                workletNode.port.postMessage({ type: 'setListening', value: false });
+                // Start with capture disabled; effect will enable when ready
+                updateWorkletListening(false);
 
                 workletNode.port.onmessage = (event) => {
-                    console.log('[App] workletNode.port.onmessage fired');
+                    console.debug('[App] workletNode.port.onmessage fired');
                     // Send audio data via WebSocket only if we're actively listening
-                    if (wsServiceRef.current && isListeningRef.current) {
-                        console.log('[App] Sending audio data to WebSocket');
+                    if (wsServiceRef.current && captureAudioRef.current) {
+                        console.debug('[App] Sending audio data to WebSocket');
                         // Convert Int16Array to base64 string
                         const int16Array = event.data;
                         const uint8Array = new Uint8Array(int16Array.buffer, int16Array.byteOffset, int16Array.byteLength);
                         const base64String = btoa(String.fromCharCode(...uint8Array));
                         wsServiceRef.current.sendAudio(base64String, 'audio/pcm;rate=16000');
                     } else {
-                        console.log('[App] Not sending audio: isListeningRef.current =', isListeningRef.current);
+                        console.debug('[App] Not sending audio: captureAudioRef.current =', captureAudioRef.current);
                     }
                 };
 
@@ -428,16 +456,19 @@ export default function App() {
             alert("Could not start audio. Please check microphone permissions and backend connection.");
             endSimulation();
         }
-    }, []);
+    }, [handleAudioStop, updateWorkletListening]);
 
     const endSimulation = useCallback(() => {
         console.log('[App] Ending simulation and resetting to first screen');
 
-        // Disable listening immediately
-        isListeningRef.current = false;
-        if (workletNodeRef.current) {
-            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
+        // Disable microphone capture immediately
+        if (captureTimeoutRef.current !== null) {
+            window.clearTimeout(captureTimeoutRef.current);
+            captureTimeoutRef.current = null;
         }
+        updateWorkletListening(false);
+        setMicMuted(false);
+        stopAllPlayback();
 
         // Close WebSocket connection
         if (wsServiceRef.current) {
@@ -464,8 +495,8 @@ export default function App() {
         setTranscripts([]);
         setStatus('idle');
         nextTranscriptIdRef.current = 0;
-        isListeningRef.current = false;
-    }, []);
+        setWorkletReady(false);
+    }, [stopAllPlayback, updateWorkletListening]);
     
     useEffect(() => {
         // Cleanup on unmount
@@ -494,20 +525,14 @@ export default function App() {
                     />
                     <div className="flex justify-center mt-4 gap-4">
                         <button
-                            className={`px-8 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-full transition-colors duration-300 ${isListening || status === 'speaking' || !workletReady ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            onClick={handleStartListening}
-                            disabled={isListening || status === 'speaking' || !workletReady}
+                            className={`px-8 py-3 ${micMuted ? 'bg-slate-600 hover:bg-slate-500' : 'bg-green-600 hover:bg-green-700'} text-white font-bold rounded-full transition-colors duration-300 ${!workletReady ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            onClick={() => setMicMuted((prev) => !prev)}
+                            disabled={!workletReady}
                         >
-                            <MicrophoneIcon className="w-6 h-6 mr-2 inline-block" /> {isListening ? 'Listening...' : !workletReady ? 'Initializing...' : 'Start Listening'}
-                        </button>
-                        <button
-                            className={`px-8 py-3 bg-gray-600 hover:bg-gray-700 text-white font-bold rounded-full transition-colors duration-300 ${!isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            onClick={handleStopListening}
-                            disabled={!isListening}
-                        >
-                            Stop Listening
+                            <MicrophoneIcon className="w-6 h-6 mr-2 inline-block" /> {micMuted ? 'Unmute Microphone' : 'Mute Microphone'}
                         </button>
                     </div>
+                    <p className="text-center text-sm text-slate-300 mt-2">Your microphone starts automatically when the AI is ready. Use the toggle to mute at any time.</p>
                 </div>
             )}
         </main>

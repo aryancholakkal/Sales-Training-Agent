@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import base64
+import time
 from typing import Optional, Callable, Dict, Any, List
 from livekit import api, rtc
 # Note: livekit.agents imports temporarily commented out due to version compatibility
@@ -34,11 +35,18 @@ class LiveKitOrchestrationService:
         self.groq_service: Optional[GroqService] = None
         self.stt_service: Optional[DeepgramService] = None
         self.tts_service: Optional[OpenAITTSService] = None
-        self.customer_tts_service: Optional[OpenAITTSService] = None
 
         # VAD and pipeline configuration
         self.vad_instance = None
         self.pipeline_agent = None
+
+        # Conversation state helpers
+        self._user_message_lock = asyncio.Lock()
+        self._last_final_user_text: Optional[str] = None
+        self._last_ai_response: Optional[str] = None
+        self._last_user_final_ts: float = 0.0
+        self._current_tts_task: Optional[asyncio.Task] = None
+        self._tts_interrupting: bool = False
 
     async def initialize_session(
         self,
@@ -63,6 +71,7 @@ class LiveKitOrchestrationService:
             self._on_message_callback = on_message_callback
             self._on_status_callback = on_status_callback
             self._on_transcript_callback = on_transcript_callback
+            self.reset_turn_state()
 
             # Initialize AI services with error handling
             services_initialized = []
@@ -165,28 +174,7 @@ class LiveKitOrchestrationService:
                 logger.error(f"OpenAI TTS voice: {openai_tts_voice}")
                 self.tts_service = None
 
-            # Initialize OpenAI TTS service for customer voice (different voice)
-            logger.info("Initializing OpenAI TTS service for customer...")
-            try:
-                # Use a different voice for customer (e.g., "nova" for female customer voice)
-                customer_voice = "nova"  # Different from AI voice
-                self.customer_tts_service = OpenAITTSService(openai_api_key, customer_voice)
-                customer_tts_success = await self.customer_tts_service.initialize_session(
-                    voice=customer_voice,
-                    model="tts-1",
-                    on_audio_callback=self._on_customer_audio_generated,
-                    on_error_callback=self._on_service_error
-                )
-                if customer_tts_success:
-                    services_initialized.append("OpenAI TTS (Customer)")
-                    logger.info("OpenAI TTS service for customer initialized successfully")
-                else:
-                    logger.warning("OpenAI TTS service for customer initialization returned False")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI TTS service for customer: {e}")
-                self.customer_tts_service = None
-
-            # Check if at least one service is available (Groq and at least one TTS)
+            # Check if required services are available (Groq and AI TTS)
             if not services_initialized or "Groq" not in services_initialized:
                 logger.error("No AI services could be initialized - Groq is required")
                 raise Exception("Groq service is required for the system to work")
@@ -281,46 +269,174 @@ class LiveKitOrchestrationService:
             if not self._is_active:
                 return
 
-            text = transcript_data.get("text", "")
+            raw_text = transcript_data.get("text", "")
+            text = raw_text.strip()
             is_final = transcript_data.get("is_final", False)
             confidence = transcript_data.get("confidence")
 
-            logger.info(f"[STT] Received transcript in LiveKit service: '{text}' (final: {is_final}, confidence: {confidence})")
+            log_message = f"[STT] Received transcript in LiveKit service: '{raw_text}' (final: {is_final}, confidence: {confidence})"
+            if is_final:
+                logger.info(log_message)
+            else:
+                logger.debug(log_message)
+
+            if not is_final and text and transcript_data.get("speaker") == "Trainee":
+                if self.is_ai_speaking():
+                    await self.interrupt_ai_speech("trainee_started_speaking")
 
             if self._on_transcript_callback:
-                logger.info(f"[WebSocket] Sending transcript to WebSocket client: '{text}'")
                 await self._on_transcript_callback({
-                    "text": text,
+                    "text": raw_text,
                     "is_final": is_final,
                     "confidence": confidence,
                     "speaker": "Trainee"
                 })
             else:
-                logger.warning("[WebSocket] No transcript callback available")
+                logger.debug("[WebSocket] No transcript callback available")
 
-            # If transcript is final, first generate customer voice, then send to LLM
-            if is_final and text.strip():
-                # 1. Generate and play customer TTS (agent's message)
-                if self.customer_tts_service:
-                    logger.info("[TTS] Generating customer voice for transcript (agent message)")
-                    await self.customer_tts_service.stream_text_to_speech(text)
-                else:
-                    logger.warning("[TTS] Customer TTS service not available")
+            if not text:
+                return
 
-                # 2. After customer TTS is done, proceed to LLM
-                logger.info(f"[LLM] Processing final transcript: '{text}'")
+            if is_final:
+                now = time.monotonic()
+                if text == self._last_final_user_text and (now - self._last_user_final_ts) < 1.0:
+                    logger.debug("[LLM] Skipping duplicate final transcript from trainee")
+                    return
+
+                self._last_final_user_text = text
+                self._last_user_final_ts = now
+                await self._handle_final_user_transcript(text)
+
+        except Exception as e:
+            logger.error(f"Error handling transcript: {e}")
+
+    async def _handle_final_user_transcript(self, text: str):
+        """Ensure final user transcripts are processed sequentially."""
+        try:
+            async with self._user_message_lock:
+                if not self._is_active:
+                    return
+
+                if not self.groq_service:
+                    logger.warning("[LLM] Groq service not available")
+                    return
+
+                logger.info(f"[LLM] Processing trainee message: '{text}'")
                 self.status = AgentStatus.THINKING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
 
-                if self.groq_service:
-                    logger.info("[LLM] Sending message to Groq service")
-                    await self.groq_service.stream_message(text)
-                else:
-                    logger.warning("[LLM] Groq service not available")
+                await self.groq_service.stream_message(text)
 
         except Exception as e:
-            logger.error(f"Error handling transcript: {e}")
+            logger.error(f"Error while handling final transcript: {e}")
+
+    def reset_turn_state(self):
+        """Clear cached turn tracking data for a fresh conversation."""
+        self._last_final_user_text = None
+        self._last_ai_response = None
+        self._last_user_final_ts = 0.0
+
+    def is_ai_speaking(self) -> bool:
+        """Return True when the AI is currently streaming speech audio."""
+        task_active = self._current_tts_task is not None and not self._current_tts_task.done()
+        tts_active = self.tts_service is not None and self.tts_service.is_streaming()
+        return task_active or tts_active
+
+    async def interrupt_ai_speech(self, reason: str = "user_started_speaking") -> bool:
+        """Stop current AI speech playback when the user interrupts."""
+        if not self.is_ai_speaking():
+            return False
+
+        if self._tts_interrupting:
+            return False
+
+        self._tts_interrupting = True
+        try:
+            logger.info(f"[TTS] Interrupt requested: {reason}")
+            stopped = await self._stop_tts_playback(reason=reason, notify_client=True)
+            return stopped
+        finally:
+            self._tts_interrupting = False
+
+    async def _stop_tts_playback(self, reason: str, notify_client: bool, update_status: bool = True) -> bool:
+        """Stop any active TTS playback task and optionally notify the client."""
+        task = self._current_tts_task
+        stream_active = self.tts_service is not None and self.tts_service.is_streaming()
+
+        if task is None and not stream_active:
+            return False
+
+        if self.tts_service is not None:
+            try:
+                await self.tts_service.stop_stream(reason=reason)
+            except Exception as e:
+                logger.error(f"Error requesting TTS stream stop: {e}")
+
+        if task and not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=1.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            except asyncio.CancelledError:
+                pass
+
+        self._current_tts_task = None
+
+        if notify_client and self._on_message_callback:
+            try:
+                await self._on_message_callback({
+                    "type": "audio_stop",
+                    "reason": reason
+                })
+            except Exception as e:
+                logger.error(f"Error notifying client about audio stop: {e}")
+
+        if update_status and self._is_active:
+            self.status = AgentStatus.LISTENING
+            if self._on_status_callback:
+                await self._on_status_callback(self.status)
+
+        return True
+
+    async def _start_tts_stream(self, text: str):
+        """Start streaming TTS audio for the provided text."""
+        if not self.tts_service:
+            logger.warning("[TTS] AI TTS service not available for response")
+            if self._is_active:
+                self.status = AgentStatus.LISTENING
+                if self._on_status_callback:
+                    await self._on_status_callback(self.status)
+            return
+
+        await self._stop_tts_playback(reason="replace_ai_tts", notify_client=False, update_status=False)
+
+        async def run_tts():
+            task_ref = asyncio.current_task()
+            try:
+                await self.tts_service.stream_text_to_speech(text)
+            except asyncio.CancelledError:
+                logger.info("[TTS] Streaming task cancelled")
+                raise
+            except Exception as e:
+                logger.error(f"Error during TTS streaming: {e}")
+            finally:
+                if self._current_tts_task is task_ref:
+                    self._current_tts_task = None
+                if self._is_active and self.status != AgentStatus.ERROR:
+                    self.status = AgentStatus.LISTENING
+                    if self._on_status_callback:
+                        await self._on_status_callback(self.status)
+
+        self.status = AgentStatus.SPEAKING
+        if self._on_status_callback:
+            await self._on_status_callback(self.status)
+
+        self._current_tts_task = asyncio.create_task(run_tts())
 
     async def _on_llm_response(self, response: str, is_partial: bool = False):
         """Handle response from LLM service"""
@@ -337,17 +453,29 @@ class LiveKitOrchestrationService:
                     "speaker": "AI Assistant"
                 })
 
-            # If response is complete, send to TTS
-            if not is_partial and response.strip() and self.tts_service:
-                logger.info(f"[TTS] Generating AI speech for response: '{response}'")
-                self.status = AgentStatus.SPEAKING
+            if is_partial:
+                # Reset last AI response marker while streaming chunks
+                self._last_ai_response = None
+                return
+
+            final_response = response.strip()
+            if not final_response:
+                return
+
+            if final_response == self._last_ai_response:
+                logger.debug("[TTS] Duplicate final AI response detected, skipping speech generation")
+                return
+
+            self._last_ai_response = final_response
+
+            if self.tts_service:
+                logger.info(f"[TTS] Generating AI speech for response: '{final_response}'")
+                await self._start_tts_stream(final_response)
+            else:
+                logger.warning("[TTS] AI TTS service not available for response")
+                self.status = AgentStatus.LISTENING
                 if self._on_status_callback:
                     await self._on_status_callback(self.status)
-
-                # Send to OpenAI TTS with streaming for real-time audio
-                await self.tts_service.stream_text_to_speech(response)
-            elif not is_partial and response.strip() and not self.tts_service:
-                logger.warning("[TTS] AI TTS service not available for response")
 
         except Exception as e:
             logger.error(f"Error handling LLM response: {e}")
@@ -398,47 +526,6 @@ class LiveKitOrchestrationService:
 
         except Exception as e:
             logger.error(f"Error handling AI generated audio: {e}")
-
-    async def _on_customer_audio_generated(self, audio_bytes: bytes, mime_type: str, is_stream: bool = False, bit_rate: Optional[int] = None, codec: Optional[str] = None, sample_rate: Optional[int] = None, channels: Optional[int] = None, bit_depth: Optional[int] = None, encoding: Optional[str] = None):
-        """Handle generated audio from customer TTS service"""
-        try:
-            if not self._is_active:
-                return
-
-            logger.info(f"[TTS] Customer audio generated: {len(audio_bytes)} bytes, mime_type: {mime_type}, is_stream: {is_stream}")
-
-            # Publish audio to LiveKit room
-            if self.room and audio_bytes:
-                await self._publish_audio_to_room(audio_bytes)
-
-            # Also send via callback for WebSocket clients
-            if self._on_message_callback:
-                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-                logger.info(f"[WebSocket] Sending customer audio to client: {len(audio_base64)} base64 chars")
-                resolved_mime = mime_type or "audio/mpeg"
-                resolved_sample_rate = sample_rate or (24000 if "mp3" in resolved_mime or "mpeg" in resolved_mime else 16000)
-                resolved_channels = channels or 1
-                resolved_bit_rate = bit_rate or 192000
-                resolved_codec = codec or ("mp3" if "mp3" in resolved_mime or "mpeg" in resolved_mime else None)
-                resolved_bit_depth = bit_depth
-                resolved_encoding = encoding
-                await self._on_message_callback({
-                    "type": "audio",
-                    "data": audio_base64,
-                    "mime_type": resolved_mime,
-                    "sample_rate": resolved_sample_rate,
-                    "channels": resolved_channels,
-                    "bit_rate": resolved_bit_rate,
-                    "codec": resolved_codec,
-                    "bit_depth": resolved_bit_depth,
-                    "encoding": resolved_encoding,
-                    "speaker": "Customer"
-                })
-
-            # Don't change status for customer audio - it's supplementary
-
-        except Exception as e:
-            logger.error(f"Error handling customer generated audio: {e}")
 
     async def _publish_audio_to_room(self, audio_bytes: bytes):
         """Publish audio to LiveKit room"""
@@ -492,6 +579,11 @@ class LiveKitOrchestrationService:
         # Stop accepting new messages
         self._is_active = False
 
+        try:
+            await self._stop_tts_playback("cleanup", notify_client=True, update_status=False)
+        except Exception as e:
+            logger.error(f"Error stopping TTS during cleanup: {e}")
+
         # Add small delay to let fast pending operations complete (protected)
         try:
             await asyncio.sleep(0.1)
@@ -531,15 +623,6 @@ class LiveKitOrchestrationService:
                 except Exception as e:
                     logger.error(f"Error closing TTS service: {e}")
 
-            if self.customer_tts_service:
-                try:
-                    await self.customer_tts_service.close_session()
-                except asyncio.CancelledError:
-                    logger.info("Customer TTS close was cancelled; re-raising CancelledError")
-                    raise
-                except Exception as e:
-                    logger.error(f"Error closing customer TTS service: {e}")
-
             # 4. Finally close LLM
             if self.groq_service:
                 try:
@@ -552,6 +635,7 @@ class LiveKitOrchestrationService:
                     logger.error(f"Error closing Groq service: {e}")
 
             logger.info("All services cleaned up (best-effort)")
+            self.reset_turn_state()
 
         except asyncio.CancelledError:
             # Ensure cancellation propagates to the caller so the runtime can shut down quickly

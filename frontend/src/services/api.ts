@@ -13,10 +13,11 @@ export interface PersonaResponse {
 }
 
 export interface TranscriptMessage {
-  id: number;
+  id?: number;
   speaker: 'Trainee' | 'Customer';
   text: string;
   is_final?: boolean;
+  confidence?: number;
 }
 
 export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';

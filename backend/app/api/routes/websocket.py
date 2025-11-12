@@ -46,8 +46,6 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
     stt_error_interval = 2.0  # seconds between repeated STT error logs
     audio_frames_sent = 0  # count frames for periodic summaries
     # Manual listening state
-    is_listening = False
-
     # Create a cancellation event for graceful shutdown
     cancel_event = asyncio.Event()
     
@@ -82,7 +80,12 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
             "persona": persona,
             "orchestration_service": orchestration_service,
             "transcripts": [],
-            "room_name": f"sales_training_{session_id}"
+            "room_name": f"sales_training_{session_id}",
+            "next_transcript_id": 0,
+            "transcript_state": {
+                "Trainee": {"id": None, "is_final": True},
+                "Customer": {"id": None, "is_final": True}
+            }
         }
         
         # Set up callbacks that check connection state
@@ -116,6 +119,13 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                                 "mime_type": message.get("mime_type", "audio/mpeg")
                             }
                         })
+                    elif message.get("type") == "audio_stop":
+                        await safe_send({
+                            "type": "audio_stop",
+                            "data": {
+                                "reason": message.get("reason")
+                            }
+                        })
                     elif message.get("type") == "transcript":
                         # Streaming transcript from LLM
                         await safe_send({
@@ -146,6 +156,24 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
             except Exception as e:
                 logger.error(f"Error handling orchestration message: {e}")
 
+        def merge_transcript_text(existing: str, incoming: str) -> str:
+            if not existing:
+                return incoming
+            if not incoming:
+                return existing
+            if existing == incoming:
+                return existing
+            if incoming.startswith(existing):
+                return incoming
+            if existing.endswith(incoming):
+                return existing
+
+            max_overlap = min(len(existing), len(incoming))
+            for k in range(max_overlap, 0, -1):
+                if existing.endswith(incoming[:k]):
+                    return existing + incoming[k:]
+            return existing + incoming
+
         async def on_transcript_received(transcript_data):
             """Handle transcript updates from STT/TTS"""
             try:
@@ -154,7 +182,7 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                     logger.warning(f"[WebSocket] No session data found for session_id: {session_id}")
                     return
 
-                logger.info(f"[WebSocket] Received transcript data: {transcript_data}")
+                logger.debug(f"[WebSocket] Received transcript data: {transcript_data}")
 
                 # Map speaker labels to allowed values
                 speaker_raw = transcript_data.get("speaker", "Unknown")
@@ -165,29 +193,71 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                 else:
                     speaker = "Customer"  # Default fallback
 
-                # Create transcript message
-                transcript = TranscriptMessage(
-                    id=len(session_data['transcripts']),
-                    speaker=speaker,
-                    text=transcript_data.get("text", "")
+                is_final = transcript_data.get("is_final", True)
+                text = transcript_data.get("text", "")
+                confidence = transcript_data.get("confidence")
+
+                transcript_state = session_data.setdefault(
+                    "transcript_state",
+                    {
+                        "Trainee": {"id": None, "is_final": True},
+                        "Customer": {"id": None, "is_final": True}
+                    }
                 )
 
-                # Only add final transcripts to history
-                if transcript_data.get("is_final", True):
-                    session_data['transcripts'].append(transcript)
-                    logger.info(f"[WebSocket] Added final transcript to history: '{transcript.text}' by {transcript.speaker}")
+                speaker_state = transcript_state.get(speaker)
+                if speaker_state is None:
+                    speaker_state = {"id": None, "is_final": True}
+                    transcript_state[speaker] = speaker_state
 
-                # Send transcript update
-                transcript_message = {
-                    "type": "transcript",
-                    "data": {
-                        **transcript.dict(),
-                        "is_final": transcript_data.get("is_final", True),
-                        "confidence": transcript_data.get("confidence")
-                    }
+                current_id: Optional[int] = speaker_state.get("id")
+                previous_was_final = speaker_state.get("is_final", True)
+
+                if current_id is None or (previous_was_final and not is_final):
+                    current_id = session_data.get("next_transcript_id", 0)
+                    session_data["next_transcript_id"] = current_id + 1
+                    speaker_state["id"] = current_id
+
+                transcript_payload = {
+                    "speaker": speaker,
+                    "text": text,
+                    "is_final": is_final,
+                    "confidence": confidence,
+                    "id": current_id
                 }
-                logger.info(f"[WebSocket] Sending transcript message to client: {transcript_message}")
-                await safe_send(transcript_message)
+
+                if is_final:
+                    transcripts_list = session_data['transcripts']
+                    existing_index = next((idx for idx, t in enumerate(transcripts_list) if t.id == current_id), None)
+                    if existing_index is not None:
+                        existing_transcript = transcripts_list[existing_index]
+                        merged_text = merge_transcript_text(existing_transcript.text, text)
+                        transcripts_list[existing_index] = TranscriptMessage(
+                            id=current_id,
+                            speaker=speaker,
+                            text=merged_text,
+                            is_final=True,
+                            confidence=confidence
+                        )
+                    else:
+                        transcripts_list.append(TranscriptMessage(
+                            id=current_id,
+                            speaker=speaker,
+                            text=text,
+                            is_final=True,
+                            confidence=confidence
+                        ))
+
+                if is_final:
+                    logger.info(f"[WebSocket] Added final transcript to history: '{text}' by {speaker} (id={current_id})")
+
+                speaker_state["is_final"] = is_final
+
+                logger.debug(f"[WebSocket] Sending transcript message to client: {transcript_payload}")
+                await safe_send({
+                    "type": "transcript",
+                    "data": transcript_payload
+                })
 
             except Exception as e:
                 logger.error(f"Error handling transcript: {e}")
@@ -246,20 +316,7 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
 
                 message_type = message_data.get("type")
 
-                if message_type == "start_listening":
-                    is_listening = True
-                    logger.info("[WebSocket] Received start_listening, enabling listening state.")
-                    continue
-
-                if message_type == "stop_listening":
-                    is_listening = False
-                    logger.info("[WebSocket] Received stop_listening, disabling listening state.")
-                    continue
-
                 if message_type == "audio":
-                    if not is_listening:
-                        logger.info("[WebSocket] Ignoring audio: not in listening state.")
-                        continue
                     # Handle audio input for STT processing
                     audio_data = message_data.get("data", {}).get("audio", "")
                     if not audio_data:
@@ -365,6 +422,15 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                     session_data = active_sessions.get(session_id)
                     if session_data:
                         session_data['transcripts'].clear()
+                        session_data['next_transcript_id'] = 0
+                        session_data['transcript_state'] = {
+                            "Trainee": {"id": None, "is_final": True},
+                            "Customer": {"id": None, "is_final": True}
+                        }
+                        try:
+                            orchestration_service.reset_turn_state()
+                        except Exception as e:
+                            logger.error(f"Error resetting turn state: {e}")
 
                     await safe_send({
                         "type": "conversation_reset",

@@ -1,7 +1,7 @@
 class AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.isListening = true;
+    this.isListening = false;
     this.lastAudioTime = currentTime;
     this.silenceInterval = 1.0; // seconds
     this.silenceLength = 320; // 20ms at 16kHz
@@ -10,7 +10,7 @@ class AudioProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (event) => {
       if (event.data.type === 'setListening') {
         this.isListening = event.data.value;
-        console.log(`[AudioProcessor] Listening set to: ${this.isListening}`);
+        console.debug(`[AudioProcessor] Listening set to: ${this.isListening}`);
       }
     };
   }

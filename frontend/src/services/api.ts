@@ -12,6 +12,20 @@ export interface PersonaResponse {
   personas: Persona[];
 }
 
+export interface Product {
+  id: string;
+  name: string;
+  tagline?: string;
+  description?: string;
+  price?: string;
+  key_benefits?: string[];
+  usage_notes?: string;
+}
+
+export interface ProductResponse {
+  products: Product[];
+}
+
 export interface TranscriptMessage {
   id?: number;
   speaker: 'Trainee' | 'Customer';
@@ -23,9 +37,10 @@ export interface TranscriptMessage {
 export type AgentStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export class ApiService {
-  static async getPersonas(): Promise<Persona[]> {
+  static async getPersonas(productId?: string): Promise<Persona[]> {
     try {
-      const response = await fetch(`${API_BASE_URL}/personas/`);
+      const params = productId ? `?product_id=${encodeURIComponent(productId)}` : '';
+      const response = await fetch(`${API_BASE_URL}/personas/${params}`);
       if (!response.ok) {
         throw new Error(`Failed to fetch personas: ${response.statusText}`);
       }
@@ -37,15 +52,30 @@ export class ApiService {
     }
   }
 
-  static async getPersona(personaId: string): Promise<Persona> {
+  static async getPersona(personaId: string, productId?: string): Promise<Persona> {
     try {
-      const response = await fetch(`${API_BASE_URL}/personas/${personaId}`);
+      const params = productId ? `?product_id=${encodeURIComponent(productId)}` : '';
+      const response = await fetch(`${API_BASE_URL}/personas/${personaId}${params}`);
       if (!response.ok) {
         throw new Error(`Failed to fetch persona: ${response.statusText}`);
       }
       return await response.json();
     } catch (error) {
       console.error('Error fetching persona:', error);
+      throw error;
+    }
+  }
+
+  static async getProducts(): Promise<Product[]> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/products/`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch products: ${response.statusText}`);
+      }
+      const data: ProductResponse = await response.json();
+      return data.products;
+    } catch (error) {
+      console.error('Error fetching products:', error);
       throw error;
     }
   }

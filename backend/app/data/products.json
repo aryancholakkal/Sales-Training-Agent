@@ -1,0 +1,41 @@
+[
+	{
+		"id": "radiant-glow-set",
+		"name": "Radiant Glow Skincare Set",
+		"tagline": "A 3-step brightening ritual for visible results in 14 days",
+		"description": "A dermatologist-developed cleanser, serum, and moisturizer trio that targets dullness and uneven tone while remaining gentle on sensitive skin.",
+		"price": "$129",
+		"key_benefits": [
+			"Clinically proven to improve radiance by 42% in two weeks",
+			"Fragrance-free and suitable for sensitive skin",
+			"Includes a travel-size SPF booster as a bonus"
+		],
+		"usage_notes": "Recommend a morning and evening routine. Remind customers to patch-test and layer lightest to richest texture."
+	},
+	{
+		"id": "peak-performance-headset",
+		"name": "Peak Performance Wireless Headset",
+		"tagline": "Noise-cancelling focus with all-day comfort",
+		"description": "A premium Bluetooth headset featuring adaptive noise cancellation, dual device pairing, and 40 hours of battery life for remote professionals.",
+		"price": "$249",
+		"key_benefits": [
+			"AI-enhanced microphone array that filters background noise",
+			"Memory foam ear cups engineered for 8+ hour comfort",
+			"USB-C fast charging delivers 8 hours of use in 15 minutes"
+		],
+		"usage_notes": "Position as an upgrade from commodity headsets. Highlight warranty and enterprise volume discounts when relevant."
+	},
+	{
+		"id": "smart-hydro-bottle",
+		"name": "HydroTrack Smart Water Bottle",
+		"tagline": "Personalized hydration coaching in a sleek bottle",
+		"description": "A stainless steel, app-connected bottle that tracks water intake, glows to send reminders, and syncs with fitness apps to set adaptive hydration goals.",
+		"price": "$89",
+		"key_benefits": [
+			"Sensors track temperature and sips in real time",
+			"App creates adaptive hydration goals based on activity",
+			"Dishwasher-safe components with BPA-free construction"
+		],
+		"usage_notes": "Great for wellness challenges and corporate gifting. Mention optional engraving and bundled family packs."
+	}
+]

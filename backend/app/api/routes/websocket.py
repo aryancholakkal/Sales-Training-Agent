@@ -6,6 +6,7 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from typing import Dict, Optional
 from ...services.persona_service import PersonaService, get_persona_prompt
+from ...services.product_service import ProductService
 from ...services.livekit_service import LiveKitOrchestrationService
 from ...models.session import AgentStatus, WebSocketMessage, TranscriptMessage
 from ...core.config import get_settings
@@ -56,9 +57,22 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
     logger.info(f"Deepgram API Key length: {len(settings.deepgram_api_key) if settings.deepgram_api_key else 0}")
     logger.info(f"First 4 chars of Deepgram API Key: {settings.deepgram_api_key[:4] if settings.deepgram_api_key else 'N/A'}")
     
+    product = None
+
     try:
+        product_id = websocket.query_params.get("product_id")
+        if product_id:
+            product = ProductService.get_product_by_id(product_id)
+            if not product:
+                await safe_send_message(websocket, {
+                    "type": "error",
+                    "data": {"message": "Product not found"}
+                })
+                await websocket.close()
+                return
+
         # Get persona
-        persona = PersonaService.get_persona_by_id(persona_id)
+        persona = PersonaService.get_persona_by_id(persona_id, product=product)
         if not persona:
             await safe_send_message(websocket, {
                 "type": "error",
@@ -85,7 +99,8 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
             "transcript_state": {
                 "Trainee": {"id": None, "is_final": True},
                 "Customer": {"id": None, "is_final": True}
-            }
+            },
+            "product": product
         }
         
         # Set up callbacks that check connection state
@@ -264,7 +279,7 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
         
         # Initialize orchestration session
         room_name = active_sessions[session_id]["room_name"]
-        combined_prompt = get_persona_prompt(persona)
+        combined_prompt = get_persona_prompt(persona, product=product)
         logger.info(f"Combined system prompt: {combined_prompt}")
         success = await orchestration_service.initialize_session(
             room_name=room_name,
@@ -293,7 +308,8 @@ async def websocket_endpoint(websocket: WebSocket, persona_id: str):
                 "session_id": session_id,
                 "room_name": room_name,
                 "status": orchestration_service.get_status().value,
-                "persona": persona.name
+                "persona": persona.name,
+                "product": product.model_dump() if product else None
             }
         })
         

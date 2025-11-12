@@ -1,19 +1,119 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Persona, AgentStatus, TranscriptMessage, ApiService } from './services/api';
+import { Persona, AgentStatus, TranscriptMessage, ApiService, Product } from './services/api';
 import { WebSocketService } from './services/websocket';
 import { decode, decodeAudioData } from './utils/audio';
 import { MicrophoneIcon, SpeakerIcon, LoadingSpinner } from './components/Icons';
 
+const ProductSelector: React.FC<{ onSelect: (product: Product) => void }> = ({ onSelect }) => {
+    const [products, setProducts] = useState<Product[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        const fetchProducts = async () => {
+            try {
+                const fetchedProducts = await ApiService.getProducts();
+                setProducts(fetchedProducts);
+            } catch (err) {
+                setError('Failed to load products');
+                console.error('Error fetching products:', err);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchProducts();
+    }, []);
+
+    if (loading) {
+        return (
+            <div className="w-full max-w-5xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl text-center">
+                <LoadingSpinner className="w-8 h-8 mx-auto mb-4" />
+                <p className="text-brand-accent">Loading products...</p>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div className="w-full max-w-5xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl text-center">
+                <p className="text-red-400">{error}</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="w-full max-w-5xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl">
+            <h2 className="text-3xl font-bold text-center text-brand-light mb-2">Select the Product You&apos;re Selling</h2>
+            <p className="text-center text-brand-accent mb-8">Pick a product to tailor the customer scenario.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {products.map((product) => (
+                    <button
+                        key={product.id}
+                        onClick={() => onSelect(product)}
+                        className="p-6 bg-brand-dark hover:bg-slate-700 rounded-xl text-left transition-all duration-300 transform hover:-translate-y-1 focus:outline-none focus:ring-2 focus:ring-brand-secondary focus:ring-opacity-75"
+                    >
+                        <div className="flex flex-col gap-3">
+                            <div className="flex items-start justify-between gap-4">
+                                <div>
+                                    <h3 className="text-xl font-semibold text-white">{product.name}</h3>
+                                    {product.tagline && <p className="text-sm text-brand-accent mt-1">{product.tagline}</p>}
+                                </div>
+                                {product.price && (
+                                    <span className="bg-brand-secondary text-white text-sm font-semibold px-3 py-1 rounded-full">{product.price}</span>
+                                )}
+                            </div>
+                            {product.description && <p className="text-sm text-slate-300">{product.description}</p>}
+                            {product.key_benefits?.length ? (
+                                <ul className="text-xs text-slate-400 space-y-1 list-disc list-inside">
+                                    {product.key_benefits.slice(0, 3).map((benefit) => (
+                                        <li key={benefit}>{benefit}</li>
+                                    ))}
+                                </ul>
+                            ) : null}
+                        </div>
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const ProductDetailsCard: React.FC<{ product: Product }> = ({ product }) => (
+    <div className="bg-brand-dark border border-slate-700 rounded-xl p-4 text-brand-light">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+                <h3 className="text-xl font-semibold text-white">{product.name}</h3>
+                {product.tagline && <p className="text-sm text-brand-accent mt-1">{product.tagline}</p>}
+            </div>
+            {product.price && <span className="bg-brand-secondary text-white text-sm font-semibold px-3 py-1 rounded-full">{product.price}</span>}
+        </div>
+        {product.description && <p className="mt-3 text-sm text-slate-300">{product.description}</p>}
+        {product.key_benefits?.length ? (
+            <ul className="mt-3 list-disc list-inside text-sm text-slate-300 space-y-1">
+                {product.key_benefits.map((benefit) => (
+                    <li key={benefit}>{benefit}</li>
+                ))}
+            </ul>
+        ) : null}
+        {product.usage_notes && (
+            <p className="mt-3 text-xs text-slate-400 italic">Usage notes: {product.usage_notes}</p>
+        )}
+    </div>
+);
+
 // Helper component for persona selection
-const PersonaSelector: React.FC<{ onSelect: (persona: Persona) => void }> = ({ onSelect }) => {
+const PersonaSelector: React.FC<{ product: Product; onSelect: (persona: Persona) => void }> = ({ product, onSelect }) => {
     const [personas, setPersonas] = useState<Persona[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         const fetchPersonas = async () => {
+            setLoading(true);
+            setError(null);
             try {
-                const fetchedPersonas = await ApiService.getPersonas();
+                const fetchedPersonas = await ApiService.getPersonas(product.id);
                 setPersonas(fetchedPersonas);
             } catch (err) {
                 setError('Failed to load personas');
@@ -24,7 +124,7 @@ const PersonaSelector: React.FC<{ onSelect: (persona: Persona) => void }> = ({ o
         };
 
         fetchPersonas();
-    }, []);
+    }, [product.id]);
 
     if (loading) {
         return (
@@ -46,8 +146,9 @@ const PersonaSelector: React.FC<{ onSelect: (persona: Persona) => void }> = ({ o
     return (
         <div className="w-full max-w-4xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl">
             <h2 className="text-3xl font-bold text-center text-brand-light mb-2">Select a Customer Persona</h2>
-            <p className="text-center text-brand-accent mb-8">Choose a scenario to start your sales training.</p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <p className="text-center text-brand-accent mb-8">You&apos;re pitching <span className="font-semibold text-white">{product.name}</span>. Pick who you&apos;re talking to.</p>
+            <ProductDetailsCard product={product} />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
                 {personas.map((persona) => (
                     <button
                         key={persona.id}
@@ -67,10 +168,11 @@ const PersonaSelector: React.FC<{ onSelect: (persona: Persona) => void }> = ({ o
 // Helper component for the active simulation view
 const SimulationView: React.FC<{
     persona: Persona;
+    product: Product;
     status: AgentStatus;
     transcripts: TranscriptMessage[];
     onEnd: () => void;
-}> = ({ persona, status, transcripts, onEnd }) => {
+}> = ({ persona, product, status, transcripts, onEnd }) => {
     const transcriptEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -106,6 +208,9 @@ const SimulationView: React.FC<{
                     {getStatusIndicator()}
                 </div>
             </div>
+            <div className="mb-4">
+                <ProductDetailsCard product={product} />
+            </div>
             <div className="flex-grow overflow-y-auto pr-4 space-y-4">
                 {transcripts.map((t, index) => (
                     <div key={t.id ?? `transcript-${index}`} className={`flex items-start gap-3 ${t.speaker === 'Trainee' ? 'justify-end' : 'justify-start'}`}>
@@ -132,6 +237,7 @@ const SimulationView: React.FC<{
 };
 
 export default function App() {
+    const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
     const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
     const [isSimulating, setIsSimulating] = useState(false);
     const [status, setStatus] = useState<AgentStatus>('idle');
@@ -173,6 +279,39 @@ export default function App() {
         setStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
     }, [stopAllPlayback]);
 
+    const handleProductSelect = useCallback((product: Product) => {
+        if (isSimulating) {
+            return;
+        }
+        stopAllPlayback();
+        if (wsServiceRef.current) {
+            wsServiceRef.current.disconnect();
+            wsServiceRef.current = null;
+        }
+        setSelectedProduct(product);
+        setSelectedPersona(null);
+        setTranscripts([]);
+        setStatus('idle');
+        nextTranscriptIdRef.current = 0;
+    }, [isSimulating, stopAllPlayback]);
+
+    const handleChangeProduct = useCallback(() => {
+        if (isSimulating) {
+            alert('Please end the current simulation before changing products.');
+            return;
+        }
+        stopAllPlayback();
+        if (wsServiceRef.current) {
+            wsServiceRef.current.disconnect();
+            wsServiceRef.current = null;
+        }
+        setSelectedProduct(null);
+        setSelectedPersona(null);
+        setTranscripts([]);
+        setStatus('idle');
+        nextTranscriptIdRef.current = 0;
+    }, [isSimulating, stopAllPlayback]);
+
     const updateWorkletListening = useCallback((value: boolean) => {
         captureAudioRef.current = value;
         if (workletNodeRef.current) {
@@ -205,12 +344,19 @@ export default function App() {
     }, [isSimulating, workletReady, micMuted, status, updateWorkletListening]);
 
     const startSimulation = useCallback(async (persona: Persona) => {
+        if (!selectedProduct) {
+            alert('Please select a product before starting the simulation.');
+            return;
+        }
+
         setMicMuted(false);
         setStatus('connecting');
         setSelectedPersona(persona);
         setIsSimulating(true);
         setTranscripts([]);
         nextTranscriptIdRef.current = 0;
+
+        const product = selectedProduct;
 
         try {
             // Get microphone access
@@ -412,7 +558,7 @@ export default function App() {
             );
 
             // Connect to WebSocket
-            const connected = await wsServiceRef.current.connect(persona.id);
+            const connected = await wsServiceRef.current.connect(persona.id, product.id);
             if (!connected) {
                 throw new Error('Failed to connect to backend');
             }
@@ -456,7 +602,7 @@ export default function App() {
             alert("Could not start audio. Please check microphone permissions and backend connection.");
             endSimulation();
         }
-    }, [handleAudioStop, updateWorkletListening]);
+    }, [handleAudioStop, selectedProduct, updateWorkletListening]);
 
     const endSimulation = useCallback(() => {
         console.log('[App] Ending simulation and resetting to first screen');
@@ -507,21 +653,45 @@ export default function App() {
         };
     }, [isSimulating, endSimulation]);
 
+    const inSelectionMode = !selectedProduct;
+    const showingPersonaSelection = selectedProduct && (!isSimulating || !selectedPersona);
+    const showingSimulation = Boolean(selectedProduct && selectedPersona && isSimulating);
+
     return (
         <main className="min-h-screen w-full flex flex-col items-center justify-center p-4 bg-gradient-to-br from-brand-dark to-slate-900 font-sans">
-            {!isSimulating || !selectedPersona ? (
+            {(inSelectionMode || showingPersonaSelection) && (
                 <>
-                 <h1 className="text-5xl font-extrabold text-center text-white mb-4">AI Sales Training Simulator</h1>
-                  <p className="text-xl text-center text-brand-accent mb-12 max-w-2xl">Practice real-world sales conversations with an AI-powered customer. Hone your skills in a safe, interactive environment.</p>
-                 <PersonaSelector onSelect={startSimulation} />
+                    <h1 className="text-5xl font-extrabold text-center text-white mb-4">AI Sales Training Simulator</h1>
+                    <p className="text-xl text-center text-brand-accent mb-8 max-w-3xl">Practice real-world sales conversations with an AI-powered customer. Select your product, choose a customer persona, and hone your pitch in a safe, interactive environment.</p>
                 </>
-            ) : (
+            )}
+
+            {inSelectionMode && (
+                <ProductSelector onSelect={handleProductSelect} />
+            )}
+
+            {showingPersonaSelection && selectedProduct && (
+                <>
+                    <PersonaSelector product={selectedProduct} onSelect={startSimulation} />
+                    <div className="mt-6 text-center">
+                        <button
+                            className="px-6 py-2 text-sm font-semibold text-brand-light underline decoration-brand-accent decoration-2 hover:text-white"
+                            onClick={handleChangeProduct}
+                        >
+                            Choose a different product
+                        </button>
+                    </div>
+                </>
+            )}
+
+            {showingSimulation && selectedProduct && selectedPersona && (
                 <div className="w-full h-[90vh] max-h-[800px] flex flex-col">
-                    <SimulationView 
-                        persona={selectedPersona} 
-                        status={status} 
+                    <SimulationView
+                        persona={selectedPersona}
+                        product={selectedProduct}
+                        status={status}
                         transcripts={transcripts}
-                        onEnd={endSimulation} 
+                        onEnd={endSimulation}
                     />
                     <div className="flex justify-center mt-4 gap-4">
                         <button

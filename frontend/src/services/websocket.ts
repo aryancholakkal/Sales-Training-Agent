@@ -41,10 +41,11 @@ export class WebSocketService {
     this.onError = onError;
   }
 
-  connect(personaId: string): Promise<boolean> {
+  connect(personaId: string, productId?: string): Promise<boolean> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(`${WS_BASE_URL}/session/${personaId}`);
+        const query = productId ? `?product_id=${encodeURIComponent(productId)}` : '';
+        this.ws = new WebSocket(`${WS_BASE_URL}/session/${personaId}${query}`);
 
         this.ws.onopen = () => {
           console.log('WebSocket connected');

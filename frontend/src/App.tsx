@@ -135,9 +135,12 @@ export default function App() {
     // Manual stop listening handler
     const handleStopListening = useCallback(() => {
         console.log('[App] Stop Listening button pressed');
+        // Notify backend to stop listening if connected
         if (wsServiceRef.current && wsServiceRef.current.isConnected()) {
             wsServiceRef.current.sendStopListening();
         }
+        // Clear any pending start request and disable local audio capture immediately
+        pendingStartListeningRef.current = false;
         isListeningRef.current = false;
         setIsListening(false);
         if (workletNodeRef.current) {
@@ -167,11 +170,18 @@ export default function App() {
     // Manual start listening handler
     const handleStartListening = useCallback(() => {
         console.log('[App] Start Listening button pressed');
+        // Attempt to notify backend to start listening
         if (wsServiceRef.current && wsServiceRef.current.isConnected()) {
             wsServiceRef.current.sendStartListening();
-            pendingStartListeningRef.current = true;
         }
-        // Do NOT enable listening yet; wait for backend confirmation
+        // Mark that user requested start; enable local audio capture immediately so the UI
+        // is responsive (un-gray the buttons). If backend later confirms, nothing changes.
+        pendingStartListeningRef.current = true;
+        isListeningRef.current = true;
+        setIsListening(true);
+        if (workletNodeRef.current) {
+            workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
+        }
     }, []);
 
     const startSimulation = useCallback(async (persona: Persona) => {
@@ -194,19 +204,51 @@ export default function App() {
             wsServiceRef.current = new WebSocketService(
                 (newStatus: AgentStatus) => {
                     setStatus(newStatus);
-                    // Only enable listening when backend status is 'listening' AND user requested it
-                    if (newStatus === 'listening' && pendingStartListeningRef.current) {
-                        console.log('[App] Backend status is listening, enabling audio send');
+                    // If backend confirms listening, clear pending flag and ensure local capture is enabled
+                    if (newStatus === 'listening') {
+                        console.log('[App] Backend status is listening');
+                        pendingStartListeningRef.current = false;
                         isListeningRef.current = true;
                         setIsListening(true);
                         if (workletNodeRef.current) {
                             workletNodeRef.current.port.postMessage({ type: 'setListening', value: true });
                         }
+                    } else if (newStatus === 'idle' || newStatus === 'error') {
+                        // If backend drops to idle or an error occurs, clear pending and disable local capture
                         pendingStartListeningRef.current = false;
+                        isListeningRef.current = false;
+                        setIsListening(false);
+                        if (workletNodeRef.current) {
+                            workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
+                        }
                     }
                 },
                 (transcript: TranscriptMessage) => {
                     setTranscripts(prev => {
+                        // Helper to merge incoming transcript chunks with existing text while
+                        // avoiding duplication from overlapping partial/final chunks.
+                        const mergeTranscript = (existingText: string, incoming: string) => {
+                            if (!incoming) return existingText;
+                            if (!existingText) return incoming;
+                            // Exact match -> keep existing
+                            if (existingText === incoming) return existingText;
+                            // If existing already ends with the incoming chunk, skip
+                            if (existingText.endsWith(incoming)) return existingText;
+                            // If incoming starts with existing, incoming contains existing as prefix -> return incoming (longer)
+                            if (incoming.startsWith(existingText)) return incoming;
+
+                            // Find the largest overlap where the end of existing matches the start of incoming
+                            const maxOverlap = Math.min(existingText.length, incoming.length);
+                            for (let k = maxOverlap; k > 0; k--) {
+                                if (existingText.endsWith(incoming.substring(0, k))) {
+                                    return existingText + incoming.substring(k);
+                                }
+                            }
+
+                            // No overlap found -> concatenate
+                            return existingText + incoming;
+                        };
+
                         // Only stream for Customer (AI) messages
                         if (transcript.speaker === 'Customer') {
                             // Find last AI message
@@ -216,15 +258,20 @@ export default function App() {
                                 prev[lastIdx].speaker === 'Customer' &&
                                 !prev[lastIdx].is_final
                             ) {
-                                // Update last message
+                                // Update last message but avoid duplicating repeated chunks
                                 const updated = [...prev];
                                 updated[lastIdx] = {
                                     ...updated[lastIdx],
-                                    text: updated[lastIdx].text + transcript.text,
+                                    text: mergeTranscript(updated[lastIdx].text, transcript.text),
                                     is_final: transcript.is_final,
                                 };
                                 return updated;
                             } else {
+                                // Avoid adding a new message if the last message already has identical text
+                                const lastIdx2 = prev.length - 1;
+                                if (lastIdx2 >= 0 && prev[lastIdx2].text === transcript.text && prev[lastIdx2].speaker === 'Customer') {
+                                    return prev;
+                                }
                                 // Add new streaming message
                                 return [
                                     ...prev,
@@ -245,11 +292,16 @@ export default function App() {
                                 const updated = [...prev];
                                 updated[lastIdx] = {
                                     ...updated[lastIdx],
-                                    text: updated[lastIdx].text + transcript.text,
+                                    text: mergeTranscript(updated[lastIdx].text, transcript.text),
                                     is_final: transcript.is_final,
                                 };
                                 return updated;
                             } else {
+                                // Avoid adding a new message if the last message already has identical text
+                                const lastIdx2 = prev.length - 1;
+                                if (lastIdx2 >= 0 && prev[lastIdx2].text === transcript.text && prev[lastIdx2].speaker === 'Trainee') {
+                                    return prev;
+                                }
                                 // Add new streaming message
                                 return [
                                     ...prev,
@@ -312,23 +364,14 @@ export default function App() {
                                 if (sourcesRef.current.size === 0) {
                                     console.log('[App] All audio sources ended, setting status to listening');
                                     setStatus('listening');
-                                    // Do not automatically re-enable listening; require user action
-                                    isListeningRef.current = false;
-                                    setIsListening(false);
+                                    // Do not automatically re-enable or disable listening; only user controls it
                                 }
                             });
 
                             source.start(nextStartTimeRef.current);
                             nextStartTimeRef.current += audioBuffer.duration;
                             sourcesRef.current.add(source);
-
-                            // Disable listening while AI is speaking
-                            console.log('[App] AI is speaking, disabling listening');
-                            isListeningRef.current = false;
-                            setIsListening(false);
-                            if (workletNodeRef.current) {
-                                workletNodeRef.current.port.postMessage({ type: 'setListening', value: false });
-                            }
+                            // Do not disable listening while AI is speaking; only user controls it
                         }
                     }
                 },

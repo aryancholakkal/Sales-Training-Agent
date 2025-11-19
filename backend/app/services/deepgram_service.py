@@ -12,20 +12,32 @@ logger = logging.getLogger(__name__)
 class DeepgramService:
     """Deepgram Speech-to-Text service using WebSocket API"""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, extra_query_params: Optional[str] = None):
         self.api_key = api_key
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.is_running = False
         self.status = AgentStatus.IDLE
         self.on_transcript_callback: Optional[Callable] = None
         self.session_id: Optional[str] = None
+        self._extra_query_params = extra_query_params.strip() if extra_query_params else None
 
         # Deepgram WebSocket URL for real-time transcription
         # Use default model/params; tune as needed
-        self.ws_url = (
-            "wss://api.deepgram.com/v1/listen?encoding=linear16"
-            "&sample_rate=16000&channels=1&model=nova-2&smart_format=true&interim_results=true"
-        )
+        base_params = [
+            "encoding=linear16",
+            "sample_rate=16000",
+            "channels=1",
+            "model=nova-2",
+            "smart_format=true",
+            "interim_results=true",
+        ]
+
+        if self._extra_query_params:
+            extra_fragment = self._extra_query_params.lstrip("?&")
+            if extra_fragment:
+                base_params.append(extra_fragment)
+
+        self.ws_url = "wss://api.deepgram.com/v1/listen?" + "&".join(base_params)
 
         # Background tasks and state
         self._receive_task: Optional[asyncio.Task] = None

@@ -25,6 +25,8 @@ class TranscriptMessage(BaseModel):
     id: int
     speaker: Literal["Trainee", "Customer"]
     text: str
+    is_final: bool = True
+    confidence: Optional[float] = None
 
 
 class AudioData(BaseModel):

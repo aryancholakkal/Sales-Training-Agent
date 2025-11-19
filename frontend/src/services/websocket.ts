@@ -3,7 +3,7 @@ import { AgentStatus, TranscriptMessage } from './api';
 const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000/api/ws';
 
 export interface WebSocketMessage {
-  type: 'audio' | 'transcript' | 'status' | 'error' | 'end_session' | 'session_initialized' | 'pong' | 'transcript_history' | 'conversation_reset';
+  type: 'audio' | 'audio_stop' | 'transcript' | 'status' | 'error' | 'end_session' | 'session_initialized' | 'pong' | 'transcript_history' | 'conversation_reset';
   data?: any;
 }
 
@@ -21,29 +21,31 @@ export interface AudioMessage {
 
 export class WebSocketService {
   private ws: WebSocket | null = null;
-  private personaId: string | null = null;
   private onStatusChange?: (status: AgentStatus) => void;
   private onTranscript?: (transcript: TranscriptMessage) => void;
   private onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void;
+  private onAudioStop?: (reason?: string) => void;
   private onError?: (error: string) => void;
 
   constructor(
     onStatusChange?: (status: AgentStatus) => void,
     onTranscript?: (transcript: TranscriptMessage) => void,
-  onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void,
+    onAudio?: (audioData: string, mimeType?: string, sampleRate?: number, channels?: number, bitRate?: number, codec?: string, bitDepth?: number, encoding?: string, speaker?: string) => void,
+    onAudioStop?: (reason?: string) => void,
     onError?: (error: string) => void
   ) {
     this.onStatusChange = onStatusChange;
     this.onTranscript = onTranscript;
     this.onAudio = onAudio;
+    this.onAudioStop = onAudioStop;
     this.onError = onError;
   }
 
-  connect(personaId: string): Promise<boolean> {
+  connect(personaId: string, productId?: string): Promise<boolean> {
     return new Promise((resolve, reject) => {
       try {
-        this.personaId = personaId;
-        this.ws = new WebSocket(`${WS_BASE_URL}/session/${personaId}`);
+        const query = productId ? `?product_id=${encodeURIComponent(productId)}` : '';
+        this.ws = new WebSocket(`${WS_BASE_URL}/session/${personaId}${query}`);
 
         this.ws.onopen = () => {
           console.log('WebSocket connected');
@@ -116,6 +118,12 @@ export class WebSocketService {
         }
         break;
 
+      case 'audio_stop':
+        if (this.onAudioStop) {
+          this.onAudioStop(message.data?.reason);
+        }
+        break;
+
       case 'error':
         if (this.onError && message.data?.message) {
           this.onError(message.data.message);
@@ -172,7 +180,6 @@ export class WebSocketService {
       this.ws.close();
       this.ws = null;
     }
-    this.personaId = null;
   }
 
   isConnected(): boolean {

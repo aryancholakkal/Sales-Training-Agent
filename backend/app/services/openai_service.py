@@ -25,6 +25,9 @@ class OpenAITTSService:
         self.status = AgentStatus.IDLE
         self._on_audio_callback: Optional[Callable] = None
         self._on_error_callback: Optional[Callable] = None
+        self._stop_stream_event: Optional[asyncio.Event] = None
+        self._active_stream_response: Optional[Any] = None
+        self._stream_active: bool = False
         # Default response format can be configured via environment variable OPENAI_TTS_RESPONSE_FORMAT
         # Acceptable values: 'mp3' or 'pcm' (or other formats supported by the API)
         self.default_response_format = os.getenv('OPENAI_TTS_RESPONSE_FORMAT', 'mp3')
@@ -209,6 +212,11 @@ class OpenAITTSService:
         if self.status == AgentStatus.ERROR:
             return
 
+        stop_event = asyncio.Event()
+        self._stop_stream_event = stop_event
+        self._stream_active = True
+        stopped_early = False
+
         try:
             self.status = AgentStatus.SPEAKING
 
@@ -226,8 +234,14 @@ class OpenAITTSService:
                 input=text,
                 response_format=response_format
             ) as response:
+                self._active_stream_response = response
                 # Stream audio chunks with small delay for better real-time experience
                 async for chunk in response.iter_bytes(chunk_size=1024):
+                    if stop_event.is_set():
+                        logger.info("OpenAI TTS stream stop requested; ending stream early")
+                        stopped_early = True
+                        break
+
                     if chunk and self._on_audio_callback:
                         if response_format == "mp3":
                             mime_type = "audio/mpeg"
@@ -260,14 +274,50 @@ class OpenAITTSService:
                     # Small delay to prevent overwhelming the audio playback
                     await asyncio.sleep(0.01)
 
-            self.status = AgentStatus.LISTENING
-            logger.info(f"Completed streaming OpenAI TTS for text: {text[:50]}...")
+            if not stopped_early:
+                logger.info(f"Completed streaming OpenAI TTS for text: {text[:50]}...")
 
+            self.status = AgentStatus.LISTENING
+        except asyncio.CancelledError:
+            logger.info("OpenAI TTS streaming coroutine cancelled")
+            self.status = AgentStatus.LISTENING
+            raise
         except Exception as e:
             logger.error(f"Failed to stream OpenAI TTS: {e}")
             self.status = AgentStatus.ERROR
             if self._on_error_callback:
                 await self._on_error_callback(f"OpenAI TTS streaming failed: {str(e)}")
+        finally:
+            self._stream_active = False
+            self._stop_stream_event = None
+            self._active_stream_response = None
+            # Ensure status is reset if stream ended with an error and callback not triggered
+            if self.status != AgentStatus.ERROR:
+                self.status = AgentStatus.LISTENING
+
+    async def stop_stream(self, reason: Optional[str] = None) -> bool:
+        """Request the active streaming session to stop."""
+        stop_event = self._stop_stream_event
+        if not stop_event:
+            return False
+
+        if not stop_event.is_set():
+            stop_event.set()
+            logger.info(f"OpenAI TTS stop requested{f' ({reason})' if reason else ''}")
+
+        response = self._active_stream_response
+        if response and hasattr(response, "aclose"):
+            try:
+                await response.aclose()
+            except Exception as e:
+                logger.debug(f"OpenAI TTS response close error: {e}")
+
+        self._stream_active = False
+        return True
+
+    def is_streaming(self) -> bool:
+        """Return True when a streaming TTS session is active."""
+        return self._stream_active
 
     async def get_available_voices(self) -> List[str]:
         """Get list of available voices"""

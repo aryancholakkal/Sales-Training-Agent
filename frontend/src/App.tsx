@@ -87,8 +87,8 @@ const ProductSelector: React.FC<{ onSelect: (product: Product) => void }> = ({ o
     );
 };
 
-const ProductDetailsCard: React.FC<{ product: Product }> = ({ product }) => (
-    <div className="bg-brand-dark border border-slate-700 rounded-xl p-4 text-brand-light">
+const ProductDetailsCard: React.FC<{ product: Product; className?: string }> = ({ product, className = '' }) => (
+    <div className={`bg-brand-dark border border-slate-700 rounded-xl p-4 text-brand-light ${className}`}>
         <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
                 <h3 className="text-xl font-semibold text-white">{product.name}</h3>
@@ -209,55 +209,57 @@ const SimulationView: React.FC<{
     };
     
     return (
-        <div className="w-full h-full flex flex-col max-w-4xl mx-auto p-4 md:p-8 bg-slate-800 rounded-2xl shadow-2xl">
-            <div className="flex justify-between items-center border-b border-slate-700 pb-4 mb-4">
-                <div className='flex items-center'>
-                    <span className="text-4xl mr-4">{persona.avatar}</span>
-                    <div>
-                        <h2 className="text-2xl font-bold text-white">{persona.name}</h2>
-                        <p className="text-sm text-brand-accent">{persona.description}</p>
+        <div className="w-full h-full max-w-7xl mx-auto flex flex-col xl:flex-row gap-6">
+            <section className="flex-1 xl:flex-[1.2] flex flex-col bg-slate-800 rounded-2xl shadow-2xl p-4 md:p-8">
+                <div className="flex justify-between items-center border-b border-slate-700 pb-4 mb-4">
+                    <div className='flex items-center'>
+                        <span className="text-4xl mr-4">{persona.avatar}</span>
+                        <div>
+                            <h2 className="text-2xl font-bold text-white">{persona.name}</h2>
+                            <p className="text-sm text-brand-accent">{persona.description}</p>
+                        </div>
+                    </div>
+                    <div className="text-lg font-medium flex items-center p-2 bg-brand-dark rounded-lg">
+                        {getStatusIndicator()}
                     </div>
                 </div>
-                <div className="text-lg font-medium flex items-center p-2 bg-brand-dark rounded-lg">
-                    {getStatusIndicator()}
+                <div className="flex-grow overflow-y-auto pr-4 space-y-4">
+                    {transcripts.map((t, index) => (
+                        <div key={t.id ?? `transcript-${index}`} className={`flex items-start gap-3 ${t.speaker === 'Trainee' ? 'justify-end' : 'justify-start'}`}>
+                           {t.speaker === 'Customer' && <div className="w-10 h-10 rounded-full bg-brand-primary flex items-center justify-center text-xl flex-shrink-0">{persona.avatar}</div>}
+                           <div className={`max-w-md p-3 rounded-xl ${t.speaker === 'Trainee' ? 'bg-brand-secondary text-white' : 'bg-brand-dark text-brand-light'}`}>
+                              <p className="font-bold text-sm mb-1">{t.speaker}</p>
+                              <p>{t.text}</p>
+                           </div>
+                           {t.speaker === 'Trainee' && <div className="w-10 h-10 rounded-full bg-brand-secondary flex items-center justify-center flex-shrink-0"><MicrophoneIcon className="w-6 h-6"/></div>}
+                        </div>
+                    ))}
+                    <div ref={transcriptEndRef} />
                 </div>
-            </div>
-            <div className="mb-4">
-                <ProductDetailsCard product={product} />
-            </div>
-            <div className="flex-grow overflow-y-auto pr-4 space-y-4">
-                {transcripts.map((t, index) => (
-                    <div key={t.id ?? `transcript-${index}`} className={`flex items-start gap-3 ${t.speaker === 'Trainee' ? 'justify-end' : 'justify-start'}`}>
-                       {t.speaker === 'Customer' && <div className="w-10 h-10 rounded-full bg-brand-primary flex items-center justify-center text-xl flex-shrink-0">{persona.avatar}</div>}
-                       <div className={`max-w-md p-3 rounded-xl ${t.speaker === 'Trainee' ? 'bg-brand-secondary text-white' : 'bg-brand-dark text-brand-light'}`}>
-                          <p className="font-bold text-sm mb-1">{t.speaker}</p>
-                          <p>{t.text}</p>
-                       </div>
-                       {t.speaker === 'Trainee' && <div className="w-10 h-10 rounded-full bg-brand-secondary flex items-center justify-center flex-shrink-0"><MicrophoneIcon className="w-6 h-6"/></div>}
-                    </div>
-                ))}
-                <div ref={transcriptEndRef} />
-            </div>
-            <div className="mt-6 flex justify-center min-h-[48px]">
-                {!sessionEnded ? (
-                    <button
-                        onClick={onEnd}
-                        disabled={isEnding}
-                        className={`px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full transition-colors duration-300 flex items-center gap-2 ${isEnding ? 'opacity-75 cursor-not-allowed' : ''}`}
-                    >
-                        {isEnding ? (
-                            <>
-                                <LoadingSpinner className="w-5 h-5" />
-                                <span>Ending...</span>
-                            </>
-                        ) : (
-                            'End Simulation'
-                        )}
-                    </button>
-                ) : (
-                    <p className="text-sm text-slate-400">Conversation ended. Review the evaluation below.</p>
-                )}
-            </div>
+                <div className="mt-6 flex justify-center min-h-[48px]">
+                    {!sessionEnded ? (
+                        <button
+                            onClick={onEnd}
+                            disabled={isEnding}
+                            className={`px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full transition-colors duration-300 flex items-center gap-2 ${isEnding ? 'opacity-75 cursor-not-allowed' : ''}`}
+                        >
+                            {isEnding ? (
+                                <>
+                                    <LoadingSpinner className="w-5 h-5" />
+                                    <span>Ending...</span>
+                                </>
+                            ) : (
+                                'End Simulation'
+                            )}
+                        </button>
+                    ) : (
+                        <p className="text-sm text-slate-400">Conversation ended. Review the evaluation below.</p>
+                    )}
+                </div>
+            </section>
+            <aside className="w-full xl:w-80 2xl:w-96 xl:flex-shrink-0">
+                <ProductDetailsCard product={product} className="shadow-2xl xl:sticky xl:top-4" />
+            </aside>
         </div>
     );
 };

@@ -55,7 +55,7 @@ export const EvaluationReport: React.FC<EvaluationReportProps> = ({
 
   if (status === 'loading') {
     return (
-      <div className="mt-8 w-full max-w-4xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl text-center">
+  <div className="mt-8 w-full max-w-7xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl text-center">
         <LoadingSpinner className="w-10 h-10 mx-auto mb-4" />
   <h3 className="text-2xl font-semibold text-white">Evaluating your conversation...</h3>
         <p className="mt-2 text-sm text-slate-300">This usually takes just a few seconds.</p>
@@ -65,7 +65,7 @@ export const EvaluationReport: React.FC<EvaluationReportProps> = ({
 
   if (status === 'error') {
     return (
-      <div className="mt-8 w-full max-w-4xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl text-center">
+  <div className="mt-8 w-full max-w-7xl mx-auto p-8 bg-slate-800 rounded-2xl shadow-2xl text-center">
         <h3 className="text-2xl font-semibold text-white mb-4">We couldn&apos;t complete the evaluation</h3>
         <p className="text-sm text-red-400 mb-6">{error || 'Something went wrong while generating your report.'}</p>
         <div className="flex flex-wrap gap-3 justify-center">
@@ -91,7 +91,7 @@ export const EvaluationReport: React.FC<EvaluationReportProps> = ({
   }
 
   return (
-    <section className="mt-8 w-full max-w-5xl mx-auto space-y-6">
+  <section className="mt-8 w-full max-w-7xl mx-auto space-y-6">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-8">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
